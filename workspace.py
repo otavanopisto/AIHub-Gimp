@@ -98,7 +98,7 @@ def ensure_aihub_folder():
 		
 	return ensure_and_retrieve_aihub_config()
 
-def update_aihub_common_property_value(workflow_context: str, workflow_id: str, property_id: str, value, project: str):
+def update_aihub_common_property_value(workflow_context: str, workflow_id: str, property_id: str | list, value, project: str):
 	"""
 	Each property that is retreived from an AIHub workflow for a given id has a value,
 	this key is used to identify the property in the workflow, this function will
@@ -124,13 +124,38 @@ def update_aihub_common_property_value(workflow_context: str, workflow_id: str, 
 	# Update the specific property value
 	saved_properties[workflow_context] = saved_properties.get(workflow_context, {})
 	saved_properties[workflow_context][workflow_id] = saved_properties.get(workflow_context, {}).get(workflow_id, {})
-	saved_properties[workflow_context][workflow_id][property_id] = value
+	if isinstance(property_id, list):
+		# if property_id is a list, this is the path of the property in the json, so we need to traverse it, remember that numbers
+		# represent indexes in lists
+		current_level = saved_properties[workflow_context][workflow_id]
+		# we don't want to traverse the last element, because that is the one we want to set
+		for key in property_id[:-1]:
+			if isinstance(key, int) and isinstance(current_level, list) and 0 <= key < len(current_level):
+				current_level = current_level[key]
+			elif isinstance(key, str) and isinstance(current_level, dict) and key in current_level:
+				current_level = current_level[key]
+			else:
+				current_level = None
+				break
+		if current_level is not None:
+			last_key = property_id[-1]
+			if isinstance(last_key, int) and isinstance(current_level, list) and last_key >= 0:
+				# if the index is out of range, we need to extend the list
+				while len(current_level) <= last_key:
+					current_level.append(None)
+				current_level[last_key] = value
+			elif isinstance(last_key, str) and isinstance(current_level, dict):
+				current_level[last_key] = value
+			else:
+				return None
+	else:
+		saved_properties[workflow_context][workflow_id][property_id] = value
 
 	# Save the updated properties back to the file
 	with open(file_to_save, "w") as f:
 		json.dump(saved_properties, f, indent=4)
 
-def get_aihub_common_property_value(workflow_context: str, workflow_id: str, property_id: str, project: str):
+def get_aihub_common_property_value(workflow_context: str, workflow_id: str, property_id: str | list, project: str):
 	"""
 	Retrieves the value of a common property for a given workflow type and property ID.
 	"""
@@ -146,5 +171,18 @@ def get_aihub_common_property_value(workflow_context: str, workflow_id: str, pro
 	if os.path.exists(file_to_read):
 		with open(file_to_read, "r") as f:
 			saved_properties = json.load(f)
+			if isinstance(property_id, list):
+				# if property_id is a list, this is the path of the property in the json, so we need to traverse it, remember that numbers
+				# represent indexes in lists
+				current_level = saved_properties.get(workflow_context, {}).get(workflow_id, {})
+				for key in property_id:
+					if isinstance(key, int) and isinstance(current_level, list) and 0 <= key < len(current_level):
+						current_level = current_level[key]
+					elif isinstance(key, str) and isinstance(current_level, dict) and key in current_level:
+						current_level = current_level[key]
+					else:
+						current_level = None
+						break
+				return current_level
 			return saved_properties.get(workflow_context, {}).get(workflow_id, {}).get(property_id, None)
 	return None

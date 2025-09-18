@@ -1,3 +1,4 @@
+import struct
 from label import AIHubLabel
 from workspace import get_aihub_common_property_value, get_project_config_filepath, update_aihub_common_property_value
 from gi.repository import Gimp, Gtk, GLib, Gio # type: ignore
@@ -60,10 +61,10 @@ class AIHubExposeBase:
 	def get_widget(self):
 		pass
 
-	def upload_binary(self, ws):
+	def upload_binary(self, ws, relegator=None):
 		# upload a binary before getting the value, if any this function is called
 		# when the value is requested by the run function
-		pass
+		return True
 
 	def is_default_value(self):
 		return self.get_value() == self.data["value"]
@@ -91,10 +92,6 @@ class AIHubExposeBase:
 	def change_label(self, new_label):
 		if hasattr(self, 'label') and self.label is not None:
 			self.label.set_text(new_label)
-
-	def force_update(self):
-		# this should be implemented by the child class if needed
-		pass
 
 	def _on_change_timeout(self, value):
 		update_aihub_common_property_value(self.workflow_context, self.workflow_id, self.id, value, self.projectname)
@@ -129,6 +126,7 @@ class AIHubExposeBase:
 class AIHubExposeImage(AIHubExposeBase):
 	label: Gtk.Label = None
 	error_label: AIHubLabel = None
+	success_label: AIHubLabel = None
 	namelabel: Gtk.Label = None
 	select_button: Gtk.Button = None
 	select_combo: Gtk.ComboBox = None
@@ -191,9 +189,11 @@ class AIHubExposeImage(AIHubExposeBase):
 			# make a box to have the label and the field
 			self.label = Gtk.Label(self.data["label"], xalign=0)
 			self.error_label = AIHubLabel("", b"color: red;")
+			self.success_label = AIHubLabel("", b"color: green;")
 			self.box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
 			self.box.pack_start(self.label, False, False, 0)
 			self.box.pack_start(self.error_label.get_widget(), False, False, 0)
+			self.box.pack_start(self.success_label.get_widget(), False, False, 0)
 			self.box.pack_start(self.select_button, True, True, 0)
 			self.box.pack_start(self.select_combo, True, True, 0)
 
@@ -207,11 +207,13 @@ class AIHubExposeImage(AIHubExposeBase):
 		else:
 			self.label = Gtk.Label(self.data["label"], xalign=0)
 			self.error_label = AIHubLabel("", b"color: red;")
+			self.success_label = AIHubLabel("", b"color: green;")
 			self.namelabel = Gtk.Label("", xalign=0)
 			self.box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
 			self.box.pack_start(self.label, False, False, 0)
 			self.box.pack_start(self.namelabel, False, False, 0)
 			self.box.pack_start(self.error_label.get_widget(), False, False, 0)
+			self.box.pack_start(self.success_label.get_widget(), False, False, 0)
 			self.box.set_margin_top(10)
 
 			self.image_preview = Gtk.Image()
@@ -224,7 +226,9 @@ class AIHubExposeImage(AIHubExposeBase):
 
 			self.load_image_data_for_internal()
 
-	def upload_binary(self, ws):
+	def upload_binary(self, ws, relegator=None):
+		self.uploaded_file_path = None
+
 		if (self.info_only_mode):
 			return
 		
@@ -306,15 +310,111 @@ class AIHubExposeImage(AIHubExposeBase):
 			
 		# now we need to make a calculation for a hash of the file to upload
 		hash_md5 = hashlib.md5()
+		# make a new binary data to upload
+		file_data = b""
 		with open(file_to_upload, "rb") as f:
-			while True:
-				data = f.read(65536)  # read in 64k chunks
-				if not data:
-					break
+			data = f.read()  # read whole thing
+			file_data = data
+
+			if not data.startswith(b'\x89PNG\r\n\x1a\n'):
 				hash_md5.update(data)
+			else:
+				pos = 8
+				while pos < len(data):
+					if pos + 8 > len(data):
+						break
+					length = struct.unpack(">I", data[pos:pos+4])[0]
+					chunk_type = data[pos+4:pos+8]
+					chunk_data = data[pos+8:pos+8+length]
+					if chunk_type in [b'IHDR', b'IDAT', b'IEND']:
+						hash_md5.update(chunk_type)
+						hash_md5.update(chunk_data)
+					pos += 8 + length + 4
 		upload_file_hash = hash_md5.hexdigest()
 
 		# now we can upload the file, using that hash as filename, if the file does not exist
+		binary_header = {
+			"type": "FILE_UPLOAD",
+			"filename": upload_file_hash,
+			"workflow_id": self.workflow_id,
+			"if_not_exists": True
+		}
+
+		print("Uploading file", file_to_upload, "with hash", upload_file_hash)
+
+		relegator.reset()
+
+		ws.send(json.dumps(binary_header))
+
+		if not relegator.wait(10):
+			self.error_label.show()
+			self.success_label.hide()
+			self.error_label.set_text("Error uploading file: Timeout waiting for server response.")
+			return False
+		
+		response_data = relegator.last_response
+
+		if (response_data["type"] == "ERROR"):
+			self.error_label.show()
+			self.success_label.hide()
+			self.error_label.set_text(f"Error uploading file: {response_data.get('message', 'Unknown error')}")
+		elif (response_data["type"] == "UPLOAD_ACK"):
+			# we can now send the file data
+			self.error_label.hide()
+			self.success_label.hide()
+			try:
+				relegator.reset()
+				ws.send_bytes(file_data)
+				
+				# wait for the upload ack
+				if not relegator.wait(10):
+					self.error_label.show()
+					self.success_label.hide()
+					self.error_label.set_text("Error uploading file: Timeout waiting for server response after sending file data.")
+					return False
+
+				response_data = relegator.last_response
+
+				if (response_data["type"] == "ERROR"):
+					self.error_label.show()
+					self.success_label.hide()
+					self.error_label.set_text(f"Error uploading file: {response_data.get('message', 'Unknown error')}")
+					return False
+				elif (response_data["type"] == "FILE_UPLOAD_SUCCESS"):
+					filename = response_data.get("file", None)
+					self.uploaded_file_path = filename
+
+					if self.uploaded_file_path is None:
+						self.error_label.show()
+						self.success_label.hide()
+						self.error_label.set_text("Error uploading file: No file path returned by server.")
+						return False
+
+					self.success_label.show()
+					self.error_label.hide()
+					self.success_label.set_text("File uploaded successfully.")
+
+					# upload successful
+					return True
+				# unexpected response
+				self.error_label.show()
+				self.success_label.hide()
+				self.error_label.set_text(f"Unexpected response from server: {response_data.get('message', 'Unknown error')}")
+				return False
+			except Exception as e:
+				self.error_label.show()
+				self.success_label.hide()
+				self.error_label.set_text(f"Error sending file data: {str(e)}")
+				return False
+		elif (response_data["type"] == "FILE_UPLOAD_SKIP"):
+			self.error_label.hide()
+			self.success_label.show()
+			self.success_label.set_text("File already exists on server, upload skipped.")
+
+			self.uploaded_file_path = upload_file_hash
+			return True
+
+		return False
 
 	def load_image_data_for_internal(self):
 		load_type = self.data["type"]
@@ -325,6 +425,7 @@ class AIHubExposeImage(AIHubExposeBase):
 		):
 			# this is our current GIMP image
 			image_selected = self.current_image
+			print(image_selected)
 			if image_selected is not None:
 				layers = image_selected.get_selected_layers()
 				current_layer = None
@@ -344,7 +445,7 @@ class AIHubExposeImage(AIHubExposeBase):
 						offsets = layer.get_offsets()
 						self.value_pos_x = offsets.offset_x
 						self.value_pos_y =  offsets.offset_y
-						self.value_layer_id = layer.get_id()
+						self.value_layer_id = str(layer.get_id())
 						self.value_width = layer.get_width()
 						self.value_height = layer.get_height()
 					else:
@@ -373,6 +474,7 @@ class AIHubExposeImage(AIHubExposeBase):
 		self.load_image_preview()
 
 	def on_file_chooser_clicked(self, widget):
+		self.uploaded_file_path = None
 		if (self.selected_filename is not None):
 			# clear the selection
 			self.selected_filename = None
@@ -423,9 +525,8 @@ class AIHubExposeImage(AIHubExposeBase):
 	def on_file_selected(self):
 		self.on_change(self.get_value_base())
 		self.load_image_preview()
-
-	def force_update(self):
-		self.on_change(self.get_value_base())
+		self.error_label.hide()
+		self.success_label.hide()
 
 	def load_image_preview(self):
 		if self.is_using_internal_file():
@@ -480,6 +581,7 @@ class AIHubExposeImage(AIHubExposeBase):
 					self.value_pos_y = 0
 
 					self.error_label.show()
+					self.success_label.hide()
 					self.error_label.set_text("Failed to load image.")
 			elif (self.select_combo.get_active() != -1 and self.select_combo.get_model() is not None):
 				tree_iter = self.select_combo.get_active_iter()
@@ -504,6 +606,13 @@ class AIHubExposeImage(AIHubExposeBase):
 		if (self.selected_filename is not None and os.path.exists(self.selected_filename)):
 			return {
 				"_local_file": self.selected_filename,
+				"local_file": self.uploaded_file_path,
+				"pos_x": self.value_pos_x,
+				"pos_y": self.value_pos_y,
+				"layer_id": self.value_layer_id
+			}
+		elif (self.uploaded_file_path is not None):
+			return {
 				"local_file": self.uploaded_file_path,
 				"pos_x": self.value_pos_x,
 				"pos_y": self.value_pos_y,
@@ -559,15 +668,19 @@ class AIHubExposeImage(AIHubExposeBase):
 		if (not self.is_using_internal_file()):
 			if (self.selected_filename is None and self.select_combo.get_active() == -1):
 				self.error_label.show()
+				self.success_label.hide()
 				self.error_label.set_text("Please select a valid image.")
 			else:
+				self.success_label.hide()
 				self.error_label.hide()
 		else:
 			if (self.selected_image is None):
 				self.error_label.show()
+				self.success_label.hide()
 				self.error_label.set_text("Please create and select an active image from the dropdown that is not empty.")
 			else:
 				self.error_label.hide()
+				self.success_label.hide()
 
 	def can_run(self):
 		if (not self.is_using_internal_file()):
@@ -724,9 +837,6 @@ class AIHubExposeInteger(AIHubExposeBase):
 	def on_change_value(self, widget):
 		self.on_change(widget.get_value_as_int())
 
-	def force_update(self):
-		self.on_change(self.get_value())
-
 	def check_validity(self, value):
 		if not isinstance(value, int):
 			self.error_label.show()
@@ -843,9 +953,6 @@ class AIHubExposeSeed(AIHubExposeBase):
 	def on_change_value(self, widget):
 		self.ensure_value_fixed_visibility_state()
 		self.on_change(self.get_value())
-	
-	def force_update(self):
-		self.on_change(self.get_value())
 
 	def can_run(self):
 		value = self.get_value()
@@ -920,9 +1027,6 @@ class AIHubExposeFloat(AIHubExposeBase):
 	def on_change_value(self, widget):
 		self.on_change(widget.get_value())
 
-	def force_update(self):
-		self.on_change(self.get_value())
-
 	def can_run(self):
 		return self.data["min"] <= self.get_value() <= self.data["max"]
 	
@@ -976,9 +1080,6 @@ class AIHubExposeBoolean(AIHubExposeBase):
 	
 	def on_change_value(self, widget):
 		self.on_change(widget.get_value())
-
-	def force_update(self):
-		self.on_change(self.get_value())
 
 	def check_validity(self, value):
 		if not isinstance(value, bool):
@@ -1052,9 +1153,6 @@ class AIHubExposeString(AIHubExposeBase):
 		return self.box
 
 	def on_change_value(self, widget):
-		self.on_change(self.get_value())
-
-	def force_update(self):
 		self.on_change(self.get_value())
 
 	def after_ui_built(self):
@@ -1138,9 +1236,6 @@ class AIHubExposeStringSelection(AIHubExposeBase):
 	
 	def on_change_value(self, widget):
 		self.on_change(self.widget.get_active_id())
-
-	def force_update(self):
-		self.on_change(self.get_value())
 
 	def can_run(self):
 		return self.get_value() in self.options

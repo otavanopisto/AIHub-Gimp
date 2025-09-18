@@ -1,10 +1,12 @@
 from websocket._app import WebSocketApp
-from workspace import ensure_aihub_folder, get_aihub_common_property_value, get_project_config_filepath, update_aihub_common_property_value
+from workspace import AI_HUB_FOLDER_PATH, ensure_aihub_folder, get_aihub_common_property_value, get_project_config_filepath, update_aihub_common_property_value
 from gi.repository import Gimp, GimpUi, Gtk, GLib # type: ignore
 from gi.repository.GdkPixbuf import Pixbuf # type: ignore
 from gi.repository.GdkPixbuf import InterpType # type: ignore
 from gi.repository import Gio # type: ignore
+import threading
 from gtkexposes import EXPOSES
+import uuid
 
 import json
 import os
@@ -67,6 +69,149 @@ def is_port_open(port, host='127.0.0.1'):
         sock.settimeout(0.5)
         result = sock.connect_ex((host, port))
         return result == 0  # 0 means the port is open
+	
+class WsRelegator:
+	def __init__(self):
+		self.event = None
+		self.last_response = None
+		self.is_awaiting = False
+
+	def wait(self, timeout=None):
+		return self.event.wait(timeout)
+
+	def set(self, last_response):
+		self.last_response = last_response
+		self.is_awaiting = False
+		self.event.set()
+
+	def reset(self):
+		self.event = threading.Event()
+		self.last_response = None
+		self.is_awaiting = True
+
+MESSAGE_LOCK = threading.Lock()
+
+def get_project_folder(project_id, project_is_real):
+	# use a temporary folder if the project is not real
+	base_folder = AI_HUB_FOLDER_PATH if project_is_real else GLib.get_tmp_dir()
+	project_folder = None
+	if not project_is_real:
+		project_folder = os.path.join(base_folder, "ai_hub_temp_project_" + project_id)
+	else:
+		project_folder = os.path.join(base_folder, "projects", project_id)
+
+	if not os.path.exists(project_folder):
+		os.makedirs(project_folder, exist_ok=True)
+
+	return project_folder
+
+def store_project_file(project_id, project_is_real, filename, file_action, bytes):
+	# first lets get the folder for the project files
+	project_folder = get_project_folder(project_id, project_is_real)
+	if not os.path.exists(project_folder):
+		os.makedirs(project_folder, exist_ok=True)
+	files_folder = os.path.join(project_folder, "files")
+	if not os.path.exists(files_folder):
+		os.makedirs(files_folder, exist_ok=True)
+	filepath = os.path.join(files_folder, filename)
+	if file_action == "REPLACE":
+		with open(filepath, "wb") as f:
+			f.write(bytes)
+		return filepath
+	elif file_action == "APPEND":
+		# we want to get the filename with a number appended to it before the extension
+		base, ext = os.path.splitext(filename)
+		# now in the directory we are supposed to store we are going to try to see which one
+		# is the filename with the highest number
+		i = 1
+		while os.path.exists(os.path.join(files_folder, f"{base}_{i}{ext}")):
+			i += 1
+		finalpath = os.path.join(files_folder, f"{base}_{i}{ext}")
+		with open(finalpath, "wb") as f:
+			f.write(bytes)
+		return finalpath
+	else:
+		raise ValueError(f"Invalid file_action {file_action}, must be REPLACE or APPEND")
+	
+def open_project_file_as_image(finalpath):
+	# now try to open it in gimp if it is an image
+
+	loaded_image = Gimp.file_load(Gimp.RunMode.NONINTERACTIVE, Gio.File.new_for_path(finalpath))
+	if loaded_image:
+		Gimp.Display.new(loaded_image)
+		# if we loaded the image successfully, then we return it
+		return loaded_image
+	
+	return None
+
+def handle_project_file(
+	project_id,
+	project_is_real,
+	filename,
+	file_action,
+	bytes,
+	action,
+	current_image,
+):
+	finalpath = store_project_file(project_id, project_is_real, filename, file_action, bytes)
+	if action is not None:
+		if action["action"] == "NEW_IMAGE" or (action["action"] == "NEW_LAYER" and current_image is None):
+			open_project_file_as_image(finalpath)
+		elif action["action"] == "NEW_LAYER":
+			pos_x = action.get("pos_x", 0)
+			pos_y = action.get("pos_y", 0)
+			# we are going to add a new layer to the current image
+			# first lets make a pixbuf from the file at finalpath
+			pixbuf = Pixbuf.new_from_file(finalpath)
+			layer = Gimp.Layer.new_from_pixbuf(current_image, "test", pixbuf, 100, Gimp.LayerMode.NORMAL, 0, 100)
+			reference_layer_raw = action.get("reference_layer_id", None)
+			reference_layer_id = int(reference_layer_raw) if reference_layer_raw is not None and reference_layer_raw.isdigit() else None
+			reference_layer = None if reference_layer_id is None else Gimp.Layer.get_by_id(reference_layer_id)
+
+			if reference_layer is None and reference_layer_raw == "__first__":
+				reference_layer = current_image.get_layers()[0] if len(current_image.get_layers()) > 0 else None
+			elif reference_layer is None and reference_layer_raw == "__last__":
+				layers = current_image.get_layers()
+				reference_layer = layers[-1] if len(layers) > 0 else None
+			
+			if reference_layer is None:
+				current_image.insert_layer(layer, None, 0)
+				layer.set_offsets(pos_x, pos_y)
+			else:
+				# can be NEW_BEFORE, NEW_AFTER and REPLACE
+				reference_layer_action = action.get("reference_layer_action", "NEW_AFTER")
+				parent_layer = reference_layer.get_parent()
+				sibling_layers = current_image.get_layers() if parent_layer is None else parent_layer.get_children()
+				reference_layer_index = sibling_layers.index(reference_layer)
+				if reference_layer_action == "NEW_BEFORE":
+					current_image.insert_layer(layer, parent_layer, reference_layer_index + 1)
+				elif reference_layer_action == "NEW_AFTER":
+					current_image.insert_layer(layer, parent_layer, reference_layer_index)
+				elif reference_layer_action == "REPLACE":
+					# in order to avoid destructive actions, we are going to insted
+					# hide it
+					reference_layer.set_visible(False)
+					current_image.insert_layer(layer, parent_layer, reference_layer_index)
+
+				layer.set_offsets(pos_x, pos_y)
+
+			# bug in GIMP 3.0.10 where the image is not updated if the layer is made visible again
+			img_width = current_image.get_width()
+			img_height = current_image.get_height()
+			# make a thumbnail starting at 400px with the ratio for the given height
+			height_from_ratio = int(400 * img_height / img_width)
+			pixbuf2 = current_image.get_thumbnail(400,height_from_ratio,Gimp.PixbufTransparency.KEEP_ALPHA)
+
+			layer.set_visible(False)
+			Gimp.displays_flush()
+			layer.set_visible(True)
+			Gimp.displays_flush()
+
+			# do it again for good measure
+			pixbuf3 = current_image.get_thumbnail(400,height_from_ratio,Gimp.PixbufTransparency.KEEP_ALPHA)
+
+
+
 
 def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 	GimpUi.init("AIHub.py")
@@ -78,8 +223,8 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 	class ImageDialog(GimpUi.Dialog):
 		message_label: Gtk.TextView
 		websocket: WebSocketApp
+		websocket_relegator: WsRelegator = None
 		errored: bool = False
-		expecting_next_binary: bool = False
 
 		workflows = {}
 		workflow_contexts = []
@@ -90,6 +235,7 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 		schedulers = []
 
 		main_box: Gtk.Box
+		is_running: bool = False
 
 		selected_image = None
 
@@ -109,15 +255,73 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 		workflow_elements: Gtk.Box
 		workflow_elements_all = []
 
+		next_file_info = []
+		next_file = []
+
+		project_id = uuid.uuid4().hex
+		project_is_real = False
+
 		def setStatus(self, v: str):
-			buffer = self.message_label.get_buffer()
-			buffer.set_text(v)
+			def do_set():
+				buffer = self.message_label.get_buffer()
+				buffer.set_text(v)
+				return False  # Stop idle handler
+			# Only update directly if in main thread
+			if threading.current_thread() is threading.main_thread():
+				do_set()
+			else:
+				GLib.idle_add(do_set)
 
 		def setErrored(self):
 			self.errored = True
 
 		def on_message(self, ws, msg):
 			if self.errored:
+				return
+			
+			if self.websocket_relegator and self.websocket_relegator.is_awaiting and isinstance(msg, str):
+				try:
+					self.websocket_relegator.set(json.loads(msg))
+				except Exception as e:
+					print("Error setting websocket_relegator:", e)
+				return
+			
+			MESSAGE_LOCK.acquire()
+			
+			# we are expecting a binary file
+			try:
+				if len(self.next_file_info) > 0 and isinstance(msg, bytes):
+					next_file_info = self.next_file_info.pop(0)
+					# we are expecting a binary file to be received next
+					try:
+						file_data = msg
+						# write the file to a temporary location
+						handle_project_file(
+							self.project_id,
+							self.project_is_real,
+							next_file_info.get("name", "unnamed"),
+							next_file_info.get("file_action", "REPLACE"),
+							file_data,
+							next_file_info.get("action", None),
+							self.selected_image,
+						)
+						MESSAGE_LOCK.release()
+						return
+					except Exception as e:
+						if self.is_running:
+							self.mark_as_running(False)
+						self.setStatus("Error: Failed to write received file from server " + str(e))
+						MESSAGE_LOCK.release()
+						return
+				elif isinstance(msg, bytes):
+					self.next_file.append(msg)
+					MESSAGE_LOCK.release()
+					return
+			except Exception as e:
+				if self.is_running:
+					self.mark_as_running(False)
+				self.setStatus("Error: Failed to process received file from server " + str(e))
+				MESSAGE_LOCK.release()
 				return
 
 			try:
@@ -136,6 +340,7 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 						if (len(self.workflow_contexts) == 0 or len(self.workflow_categories) == 0):
 							self.setStatus("Status: No valid workflows or categories found.")
 							self.setErrored()
+							MESSAGE_LOCK.release()
 							return
 						
 						try:
@@ -144,10 +349,55 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 						except Exception as e:
 							self.setStatus(f"Status: Error building UI: {e}")
 							self.setErrored()
+					elif message_parsed["type"] == "ERROR":
+						if self.is_running:
+							self.mark_as_running(False)
+						self.setStatus(f"Status: Error received from server \"{message_parsed.get('message', 'Unknown error')}\"")
+					elif message_parsed["type"] == "STATUS":
+						self.setStatus(f"Status: {message_parsed.get('message', 'Unknown status')}")
+					elif message_parsed["type"] == "WORKFLOW_AWAIT":
+						# waiting for the workflow with id, there are "before_this" users before you
+						self.setStatus(f"Status: Waiting for workflow {message_parsed.get('workflow_id', 'unknown')} to start, there are {message_parsed.get('before_this', 0)} users before you.")
+					elif message_parsed["type"] == "WORKFLOW_START":
+						self.setStatus(f"Status: Workflow {message_parsed.get('workflow_id', 'unknown')} has started.")
+					elif message_parsed["type"] == "FILE":
+						if len(self.next_file) > 0:
+							file_it_describes = self.next_file.pop(0)
+							try:
+								handle_project_file(
+									self.project_id,
+									self.project_is_real,
+									message_parsed.get("name", "unnamed"),
+									message_parsed.get("file_action", "REPLACE"),
+									file_it_describes,
+									message_parsed.get("action", None),
+									self.selected_image,
+								)
+							except Exception as e:
+								if self.is_running:
+									self.mark_as_running(False)
+								self.setStatus("Error: Failed to write received file from server " + str(e))
+								MESSAGE_LOCK.release()
+								return
+						else:
+							self.next_file_info.append(message_parsed)
+					elif message_parsed["type"] == "WORKFLOW_FINISHED":
+						if self.is_running:
+							self.mark_as_running(False)
+							if message_parsed["error"]:
+								self.setStatus(f"Status: Workflow {message_parsed.get('workflow_id', 'unknown')} finished with error: {message_parsed.get('error_message', 'No message provided')}")
+							else:
+								self.setStatus(f"Status: Workflow {message_parsed.get('workflow_id', 'unknown')} finished successfully; ready for another run.")
 					else:
+						if self.is_running:
+							self.mark_as_running(False)
 						self.setStatus(f"Status: Unknown message type received: {message_parsed['type']}")
 			except Exception as e:
+				if self.is_running:
+					self.mark_as_running(False)
 				self.setStatus("Status: Received invalid message from server.")
+
+			MESSAGE_LOCK.release()
 
 		def refresh_image_list(self, recreate_list: bool):
 			if self.errored:
@@ -539,8 +789,24 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 				# we are going to gather all the values
 				values = {}
 				for element in self.workflow_elements_all:
-					element.upload_binary(self.websocket)
+					websocket_relegator = WsRelegator()
+					self.websocket_relegator = websocket_relegator
+					status = element.upload_binary(self.websocket, self.websocket_relegator)
+					self.websocket_relegator = None
+					if (status is False):
+						self.mark_as_running(False)
+						self.setStatus("Error: Failed to upload binary data.")
+						return
 					values[element.id] = element.get_value()
+
+				workflow_operation = {
+					"type": "WORKFLOW_OPERATION",
+					"workflow_id": self.workflow_selector.get_active_id(),
+					"expose": values
+				}
+
+				self.websocket.send(json.dumps(workflow_operation))
+
 
 			except Exception as e:
 				self.setStatus(f"Error: {str(e)}")
@@ -549,7 +815,15 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 
 			return
 		
+		def on_cancel_run_workflow(self):
+			if self.errored:
+				return
+			
+			# we are going to cancel the run of the workflow
+			self.mark_as_running(False)
+		
 		def mark_as_running(self, running: bool):
+			self.is_running = running
 			# disable all the elements in the UI if running is true, otherwise enable them
 			self.image_selector.set_sensitive(not running)
 			self.context_selector.set_sensitive(not running)
@@ -580,6 +854,7 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 					f"{self.apiprotocol}://{self.apihost}:{self.apiport}/ws",
 					on_message=self.on_message,
 					on_open=self.on_open,
+					on_close=self.on_close,
 					header={"api-key": self.apikey}
 				)
 				self.websocket.run_forever()

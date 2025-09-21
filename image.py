@@ -1,6 +1,7 @@
+import traceback
 from websocket._app import WebSocketApp
 from workspace import AI_HUB_FOLDER_PATH, ensure_aihub_folder, get_aihub_common_property_value, get_project_config_filepath, update_aihub_common_property_value
-from gi.repository import Gimp, GimpUi, Gtk, GLib # type: ignore
+from gi.repository import Gimp, GimpUi, Gtk, GLib, Gdk # type: ignore
 from gi.repository.GdkPixbuf import Pixbuf # type: ignore
 from gi.repository.GdkPixbuf import InterpType # type: ignore
 from gi.repository import Gio # type: ignore
@@ -221,46 +222,6 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 		return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
 
 	class ImageDialog(GimpUi.Dialog):
-		message_label: Gtk.TextView
-		websocket: WebSocketApp
-		websocket_relegator: WsRelegator = None
-		errored: bool = False
-
-		workflows = {}
-		workflow_contexts = []
-		workflow_categories = []
-		models = []
-		loras = []
-		samplers = []
-		schedulers = []
-
-		main_box: Gtk.Box
-		is_running: bool = False
-
-		selected_image = None
-
-		# elements of the main UI
-		image_selector: Gtk.ComboBox
-		image_model: Gtk.ListStore
-		context_selector: Gtk.ComboBoxText
-		category_selector: Gtk.ComboBoxText
-		workflow_selector: Gtk.ComboBoxText
-		description_label: Gtk.TextView
-		run_button: Gtk.Button
-
-		# elements of a project type UI
-
-		# generics
-		workflow_image: Gtk.Image
-		workflow_elements: Gtk.Box
-		workflow_elements_all = []
-
-		next_file_info = []
-		next_file = []
-
-		project_id = uuid.uuid4().hex
-		project_is_real = False
-
 		def setStatus(self, v: str):
 			def do_set():
 				buffer = self.message_label.get_buffer()
@@ -608,14 +569,29 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 				self.setStatus(f"Error: {str(e)}")
 				self.setErrored()
 
+		def on_model_changed(self, new_model_id):
+			model_info = next((model for model in self.models if model["id"] == new_model_id), None)
+			if not model_info:
+				return
+			# we are going to loop through all the workflow_elements_all
+			# then we will update their current model
+			for element in self.workflow_elements_all:
+				element.on_model_changed(model_info)
+
 		def on_workflow_selected(self, combo):
 			try:
 				selected_context = self.context_selector.get_active_id()
 				selected_workflow = combo.get_active_id()
 				workflow = self.workflows.get(selected_workflow)
 
-				if not workflow or not workflow.get("description", None):
-					self.description_label.get_buffer().set_text(workflow.get("description", "No description available."))
+				if workflow is None:
+					# bug in GTK where the changed signal is called even if there are no items
+					# in the combobox, so we just ignore it
+					self.run_button.hide()
+					return
+
+				if not workflow or workflow is None or not workflow.get("description", None):
+					self.description_label.get_buffer().set_text("No description available.")
 				else:
 					self.description_label.get_buffer().set_text(workflow["description"])
 
@@ -648,6 +624,13 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 				# and let's find our exposes for that let's get the key value for each expose
 				exposes = workflow.get("expose", {})
 
+				apinfo = {
+					"protocol": self.apiprotocol,
+					"usehttps": self.apiprotocol == "wss",
+					"host": self.apihost,
+					"port": self.apiport,
+				}
+
 				for expose_id, widget in exposes.items():
 					type = widget.get("type", None)
 					data = widget.get("data", None)
@@ -662,13 +645,50 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 						data["options"] = "\n".join(self.schedulers)
 						data["options_label"] = "\n".join(self.schedulers)
 
+					elif type == "AIHubExposeModel":
+						# add the models to the options, models is a list and we need to get the id and name from each model
+						# and join them with a newline
+						# note that models have a context which should match the current context
+						# note that the data may contain a limit_to_family field that we should filter by family
+						# also has a limit_to_group field that we should filter by group
+						limit_to_family = data.get("limit_to_family", None)
+						limit_to_group = data.get("limit_to_group", None)
+
+						if limit_to_family is not None:
+							limit_to_family = limit_to_family.strip()
+							if limit_to_family == "":
+								limit_to_family = None
+
+						if limit_to_group is not None:
+							limit_to_group = limit_to_group.strip()
+							if limit_to_group == "":
+								limit_to_group = None
+
+						filtered_models = [
+							model for model in self.models if model["context"] == selected_context and
+							(limit_to_family is None or model.get("family", None) == limit_to_family) and
+							(limit_to_group is None or model.get("group", None) == limit_to_group)
+						]
+						data["filtered_models"] = filtered_models
+
+						filtered_loras = [
+							lora for lora in self.loras if lora["context"] == selected_context and
+							(limit_to_family is None or lora.get("family", None) == limit_to_family) and
+							(limit_to_group is None or lora.get("group", None) == limit_to_group)
+						]
+
+						data["filtered_loras"] = filtered_loras
+
 					ExposeClass = EXPOSES.get(type, None)
 
-					instance = ExposeClass(expose_id, data, selected_context, selected_workflow, workflow, None) if ExposeClass else None
+					instance = ExposeClass(expose_id, data, selected_context, selected_workflow, workflow, None, apinfo) if ExposeClass else None
 					if instance:
 						if self.selected_image:
 							instance.current_image_changed(self.selected_image, self.image_selector.get_model())
 						self.workflow_elements_all.append(instance)
+
+						if type == "AIHubExposeModel":
+							instance.hook_on_change_fn(self.on_model_changed)
 				
 				# now we have to sort self.workflow_elements_all by the get_index function that returns a number
 				self.workflow_elements_all.sort(key=lambda x: x.get_index())
@@ -726,29 +746,20 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 
 					self.main_box.show_all()
 					advanced_options_box.hide()
+					self.run_button.show()
 				else:
 					self.main_box.show_all()
+					self.run_button.show()
 
 				# add a horizontal separator
 				separator = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
 				self.workflow_elements.pack_start(separator, False, False, 12)
 
-				self.run_button = Gtk.Button(label="Run Workflow")
-				self.run_button.connect("clicked", self.on_run_workflow)
-				#align the run button to the right
-				self.run_button.set_halign(Gtk.Align.END)
-				self.run_button.set_hexpand(False)
-				#add margin top to the button
-				self.run_button.set_margin_top(12)
-
-				self.workflow_elements.pack_start(self.run_button, False, False, 0)
-
-				self.run_button.set_tooltip_text("Run the selected workflow with the selected options")
-				self.run_button.show()
-
 				for element in self.workflow_elements_all:
 					if element.get_widget():
 						element.after_ui_built()
+
+				self.on_dialog_focus(None, None)
 			except Exception as e:
 				self.setStatus(f"Error: {str(e)}")
 				self.setErrored()
@@ -868,6 +879,46 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 			#use_header_bar = Gtk.Settings.get_default().get_property("gtk-dialogs-use-header")
 			#GimpUi.Dialog.__init__(self, use_header_bar=use_header_bar)
 
+			self.message_label: Gtk.TextView
+			self.websocket: WebSocketApp
+			self.websocket_relegator: WsRelegator = None
+			self.errored: bool = False
+
+			self.workflows = {}
+			self.workflow_contexts = []
+			self.workflow_categories = []
+			self.models = []
+			self.loras = []
+			self.samplers = []
+			self.schedulers = []
+
+			self.main_box: Gtk.Box
+			self.is_running: bool = False
+
+			self.selected_image = None
+
+			# elements of the main UI
+			self.image_selector: Gtk.ComboBox
+			self.image_model: Gtk.ListStore
+			self.context_selector: Gtk.ComboBoxText
+			self.category_selector: Gtk.ComboBoxText
+			self.workflow_selector: Gtk.ComboBoxText
+			self.description_label: Gtk.TextView
+			self.run_button: Gtk.Button
+
+			# elements of a project type UI
+
+			# generics
+			self.workflow_image: Gtk.Image
+			self.workflow_elements: Gtk.Box
+			self.workflow_elements_all = []
+
+			self.next_file_info = []
+			self.next_file = []
+
+			self.project_id = uuid.uuid4().hex
+			self.project_is_real = False
+
 			GimpUi.Dialog.__init__(self, decorated=True, modal=False)
 			Gtk.Window.set_title(self, _("AI Hub Image Tools"))
 			Gtk.Window.set_role(self, PROC_NAME)
@@ -924,7 +975,30 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 			self.main_box.pack_start(self.message_label, False, False, 0)
 
 			contents_area = Gtk.Dialog.get_content_area(self)
-			contents_area.pack_start(self.main_box, True, True, 0)
+			#contents_area.pack_start(self.main_box, True, True, 0)
+
+			# add a scrollbar if it overflows
+			scrolled_window = Gtk.ScrolledWindow()
+			scrolled_window.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+			# get screen height and set the max height to 80% of it
+			screen = Gdk.Screen.get_default()
+			screen_height = screen.get_height()
+			scrolled_window.set_min_content_height(int(screen_height * 0.8))
+			scrolled_window.add(self.main_box)
+			contents_area.pack_start(scrolled_window, True, True, 0)
+
+			self.run_button = Gtk.Button(label="Run Workflow")
+			self.run_button.connect("clicked", self.on_run_workflow)
+			#align the run button to the right
+			self.run_button.set_halign(Gtk.Align.END)
+			self.run_button.set_hexpand(False)
+			#add margin top to the button
+			self.run_button.set_margin_top(12)
+
+			#self.workflow_elements.pack_start(self.run_button, False, False, 0)
+
+			self.run_button.set_tooltip_text("Run the selected workflow with the selected options")
+			contents_area.pack_start(self.run_button, False, False, 0)
 
 			try:
 				config = ensure_aihub_folder()

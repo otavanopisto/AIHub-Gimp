@@ -1,27 +1,33 @@
 import struct
+import urllib
 from label import AIHubLabel
 from workspace import get_aihub_common_property_value, get_project_config_filepath, update_aihub_common_property_value
-from gi.repository import Gimp, Gtk, GLib, Gio # type: ignore
+from gi.repository import Gimp, Gtk, GLib, Gio, Gdk # type: ignore
 from gi.repository.GdkPixbuf import Pixbuf # type: ignore
 from gi.repository.GdkPixbuf import InterpType # type: ignore
 import hashlib
+import random
 
 import json
 import os
 
 class AIHubExposeBase:
-	data = None
-	id = None
-	initial_value = None
-	workflow = None
-	projectname = None
-	workflow_context = None
-	workflow_id = None
-	_on_change_timeout_id = None
-	current_image = None
-	image_model = None
-	
-	def __init__(self, id, data, workflow_context, workflow_id, workflow, projectname):
+	def __init__(self, id, data, workflow_context, workflow_id, workflow, projectname, apinfo):
+		self.data = None
+		self.id = None
+		self.initial_value = None
+		self.workflow = None
+		self.projectname = None
+		self.workflow_context = None
+		self.workflow_id = None
+		self._on_change_timeout_id = None
+		self.current_image = None
+		self.image_model = None
+		self.on_change_callback = None
+		self.on_change_callback_hijack = False
+		self.apinfo = None
+
+		self.apinfo = apinfo
 		self.data = data
 		self.id = id
 		self.workflow_context = workflow_context
@@ -34,7 +40,7 @@ class AIHubExposeBase:
 			self.set_initial_value()
 
 	def set_initial_value(self):
-		if (self.data["value"] is not None):
+		if ("value" in self.data and self.data["value"] is not None):
 			self.initial_value = self.data["value"]
 
 	def read_config_json(self, key):
@@ -77,6 +83,13 @@ class AIHubExposeBase:
 	
 	def on_change(self, value):
 		self.check_validity(value)
+
+		if self.on_change_callback is not None:
+			self.on_change_callback(value)
+
+			if self.on_change_callback_hijack:
+				return
+
 		# add a timeout to stack and only do the change after 1s if the function isnt called continously
 		# basically it waits 1s before calling the function but
 		# if it is called a second time it will stop the first call
@@ -84,7 +97,7 @@ class AIHubExposeBase:
 			GLib.source_remove(self._on_change_timeout_id)
 			self._on_change_timeout_id = None
 
-		self._on_change_timeout_id = GLib.timeout_add(1000, self._on_change_timeout, value)
+		self._on_change_timeout_id = GLib.timeout_add(300, self._on_change_timeout, value)
 
 	def change_id(self, new_id):
 		self.id = new_id
@@ -110,7 +123,8 @@ class AIHubExposeBase:
 		pass
 
 	def on_refresh(self):
-		# this function is called when the refresh button is clicked
+		# this function is called when the ui is refocused and images may have changed
+		# in gimp
 		pass
 
 	def check_validity(self, value):
@@ -122,31 +136,43 @@ class AIHubExposeBase:
 	def can_run(self):
 		# by default all exposes can run
 		return True
+	
+	def on_model_changed(self, model):
+		# this function is called when the model being used changes
+		# it can be used to update the default values after initialization
+		pass
+
+	def hook_on_change_fn(self, fn):
+		self.on_change_callback = fn
+
+	def hook_on_change_fn_hijack(self, fn):
+		self.on_change_callback = fn
+		self.on_change_callback_hijack = True
 
 class AIHubExposeImage(AIHubExposeBase):
-	label: Gtk.Label = None
-	error_label: AIHubLabel = None
-	success_label: AIHubLabel = None
-	namelabel: Gtk.Label = None
-	select_button: Gtk.Button = None
-	select_combo: Gtk.ComboBox = None
-	image_preview: Gtk.Image = None
-	selected_filename: str = None
-	selected_image = None
-	selected_layer = None
-	selected_layername = None
-	box: Gtk.Box
-	info_only_mode: bool = False
+	def __init__(self, id, data, workflow_context, workflow_id, workflow, projectname, apinfo):
+		super().__init__(id, data, workflow_context, workflow_id, workflow, projectname, apinfo)
 
-	uploaded_file_path: str = None
-	value_pos_x: int = 0
-	value_pos_y: int = 0
-	value_width: int = 0
-	value_height: int = 0
-	value_layer_id: str = ""
+		self.label: Gtk.Label = None
+		self.error_label: AIHubLabel = None
+		self.success_label: AIHubLabel = None
+		self.namelabel: Gtk.Label = None
+		self.select_button: Gtk.Button = None
+		self.select_combo: Gtk.ComboBox = None
+		self.image_preview: Gtk.Image = None
+		self.selected_filename: str = None
+		self.selected_image = None
+		self.selected_layer = None
+		self.selected_layername = None
+		self.box: Gtk.Box = None
+		self.info_only_mode: bool = False
 
-	def __init__(self, id, data, workflow_context, workflow_id, workflow, projectname):
-		super().__init__(id, data, workflow_context, workflow_id, workflow, projectname)
+		self.uploaded_file_path: str = None
+		self.value_pos_x: int = 0
+		self.value_pos_y: int = 0
+		self.value_width: int = 0
+		self.value_height: int = 0
+		self.value_layer_id: str = ""
 
 		known_tooltip = None
 
@@ -689,19 +715,12 @@ class AIHubExposeImage(AIHubExposeBase):
 			return self.selected_image is not None
 
 class AIHubExposeImageInfoOnly(AIHubExposeImage):
-	def __init__(self, id, data, workflow_context, workflow_id, workflow, projectname):
-		super().__init__(id, data, workflow_context, workflow_id, workflow, projectname)
+	def __init__(self, id, data, workflow_context, workflow_id, workflow, projectname, apinfo):
+		super().__init__(id, data, workflow_context, workflow_id, workflow, projectname, apinfo)
 
 		self.info_only_mode = True
 
 class AIHubExposeImageBatch(AIHubExposeBase):
-	label: Gtk.Label = None
-	box: Gtk.Box = None
-	innerbox: Gtk.Box = None
-
-	list_of_exposes = []
-	list_of_expose_widgets = []
-
 	def get_widget_for_expose(self, expose):
 		usual_widget = expose.get_widget()
 
@@ -715,13 +734,15 @@ class AIHubExposeImageBatch(AIHubExposeBase):
 
 		return vbox
 
-	def __init__(self, id, data, workflow_context, workflow_id, workflow, projectname):
-		super().__init__(id, data, workflow_context, workflow_id, workflow, projectname)
+	def __init__(self, id, data, workflow_context, workflow_id, workflow, projectname, apinfo):
+		super().__init__(id, data, workflow_context, workflow_id, workflow, projectname, apinfo)
 
-		if self.initial_value is None:
-			# we will store this immediately
-			# so that the children have something where to store their values
-			self.on_change([])
+		self.label: Gtk.Label = None
+		self.box: Gtk.Box = None
+		self.innerbox: Gtk.Box = None
+
+		self.list_of_exposes = []
+		self.list_of_expose_widgets = []
 
 		self.label = Gtk.Label(self.data["label"], xalign=0)
 		self.label.set_size_request(400, -1)
@@ -787,13 +808,13 @@ class AIHubExposeImageBatch(AIHubExposeBase):
 		return self.data["maxlen"] >= len(self.list_of_exposes) >= self.data["minlen"] and all([expose.can_run() for expose in self.list_of_exposes])
 
 class AIHubExposeInteger(AIHubExposeBase):
-	label: Gtk.Label = None
-	error_label: AIHubLabel = None
-	widget: Gtk.SpinButton 
-	box: Gtk.Box
+	def __init__(self, id, data, workflow_context, workflow_id, workflow, projectname, apinfo):
+		super().__init__(id, data, workflow_context, workflow_id, workflow, projectname, apinfo)
 
-	def __init__(self, id, data, workflow_context, workflow_id, workflow, projectname):
-		super().__init__(id, data, workflow_context, workflow_id, workflow, projectname)
+		self.label: Gtk.Label = None
+		self.error_label: AIHubLabel = None
+		self.widget: Gtk.SpinButton = None
+		self.box: Gtk.Box = None
 
 		# make a numeric entry that only allows for integer values
 		expected_step = data["step"] if "step" in data else 1
@@ -854,14 +875,14 @@ class AIHubExposeInteger(AIHubExposeBase):
 		return self.data["min"] <= self.get_value() <= self.data["max"]
 
 class AIHubExposeSeed(AIHubExposeBase):
-	label: Gtk.Label = None
-	error_label: AIHubLabel = None
-	widget_value_fixed: Gtk.SpinButton
-	widget_value: Gtk.ComboBoxText
-	box: Gtk.Box
+	def __init__(self, id, data, workflow_context, workflow_id, workflow, projectname, apinfo):
+		super().__init__(id, data, workflow_context, workflow_id, workflow, projectname, apinfo)
 
-	def __init__(self, id, data, workflow_context, workflow_id, workflow, projectname):
-		super().__init__(id, data, workflow_context, workflow_id, workflow, projectname)
+		self.label: Gtk.Label = None
+		self.error_label: AIHubLabel = None
+		self.widget_value_fixed: Gtk.SpinButton = None
+		self.widget_value: Gtk.ComboBoxText = None
+		self.box: Gtk.Box = None
 
 		initial_value_fixed = 0
 		if (
@@ -928,18 +949,18 @@ class AIHubExposeSeed(AIHubExposeBase):
 		# ensure to add spacing from the top some margin top
 		self.box.set_margin_top(10)
 
-	def set_initial_value_from_default(self):
-		if (self.data["value"] is not None):
-			self.initial_value = {
-				"value": self.data["value"],
-				"value_fixed": self.data["value_fixed"] if "value_fixed" in self.data else 0
-			}
-
-	def get_value(self):
+	def get_value_internal(self):
 		return {
 			"value_fixed": self.widget_value_fixed.get_value_as_int(),
 			"value": self.widget_value.get_active_id()
 		}
+	
+	def get_value(self):
+		current_selection = self.widget_value.get_active_id()
+		if current_selection == "random":
+			return random.randint(0, 0xffffffffffffffff)
+		else:
+			return self.widget_value_fixed.get_value_as_int()
 
 	def get_widget(self):
 		return self.box
@@ -952,10 +973,10 @@ class AIHubExposeSeed(AIHubExposeBase):
 
 	def on_change_value(self, widget):
 		self.ensure_value_fixed_visibility_state()
-		self.on_change(self.get_value())
+		self.on_change(self.get_value_internal())
 
 	def can_run(self):
-		value = self.get_value()
+		value = self.get_value_internal()
 		return isinstance(value, dict) and "value" in value and value["value"] in ["random", "fixed"] and isinstance(value["value_fixed"], int)
 	
 	def check_validity(self, value):
@@ -967,15 +988,15 @@ class AIHubExposeSeed(AIHubExposeBase):
 
 	def after_ui_built(self):
 		self.ensure_value_fixed_visibility_state()
-		self.check_validity(self.get_value())
+		self.check_validity(self.get_value_internal())
 
 class AIHubExposeFloat(AIHubExposeBase):
-	label: Gtk.Label = None
-	widget: Gtk.SpinButton
-	box: Gtk.Box
+	def __init__(self, id, data, workflow_context, workflow_id, workflow, projectname, apinfo):
+		super().__init__(id, data, workflow_context, workflow_id, workflow, projectname, apinfo)
 
-	def __init__(self, id, data, workflow_context, workflow_id, workflow, projectname):
-		super().__init__(id, data, workflow_context, workflow_id, workflow, projectname)
+		self.label: Gtk.Label = None
+		self.widget: Gtk.SpinButton = None
+		self.box: Gtk.Box = None
 
 		# make a numeric entry that only allows for float values
 		expected_step = data["step"] if "step" in data else 0.1
@@ -994,15 +1015,15 @@ class AIHubExposeFloat(AIHubExposeBase):
 		self.widget = Gtk.SpinButton(adjustment=adjustment, climb_rate=1, digits=step_digits, numeric=True)
 		self.widget.set_input_purpose(Gtk.InputPurpose.NUMBER)
 
-		# add on change event
-		self.widget.connect("value-changed", self.on_change_value)
-
 		if (self.initial_value is not None):
 			self.widget.set_value(float(self.initial_value))
 
 		# add a tooltip with the description if any available
 		if "tooltip" in data and data["tooltip"] is not None and data["tooltip"] != "":
 			self.widget.set_tooltip_text(data["tooltip"])
+
+		# add on change event
+		self.widget.connect("value-changed", self.on_change_value)
 
 		# make a box to have the label and the field
 		# make the label, set a max width for 400 and make it wrap if it goes over
@@ -1043,14 +1064,34 @@ class AIHubExposeFloat(AIHubExposeBase):
 	def after_ui_built(self):
 		self.check_validity(self.get_value())
 
-class AIHubExposeBoolean(AIHubExposeBase):
-	label: Gtk.Label = None
-	error_label: AIHubLabel = None
-	widget: Gtk.CheckButton
-	box: Gtk.Box
+class AIHubExposeCfg(AIHubExposeFloat):
+	def on_model_changed(self, model):
+		if self.data.get("unaffected_by_model_cfg", False):
+			return
+		default_cfg = model.get("default_cfg", None)
+		if default_cfg is not None and isinstance(default_cfg, (int, float)):
+			self.widget.set_value(float(default_cfg))
+			self.on_change(self.get_value())
+			self.check_validity(self.get_value())
 
-	def __init__(self, id, data, workflow_context, workflow_id, workflow, projectname):
-		super().__init__(id, data, workflow_context, workflow_id, workflow, projectname)
+class AIHubExposeSteps(AIHubExposeInteger):
+	def on_model_changed(self, model):
+		if self.data.get("unaffected_by_model_steps", False):
+			return
+		default_steps = model.get("default_steps", None)
+		if default_steps is not None and isinstance(default_steps, int):
+			self.widget.set_value(int(default_steps))
+			self.on_change(self.get_value())
+			self.check_validity(self.get_value())
+
+class AIHubExposeBoolean(AIHubExposeBase):
+	def __init__(self, id, data, workflow_context, workflow_id, workflow, projectname, apinfo):
+		super().__init__(id, data, workflow_context, workflow_id, workflow, projectname, apinfo)
+
+		self.label: Gtk.Label = None
+		self.error_label: AIHubLabel = None
+		self.widget: Gtk.CheckButton = None
+		self.box: Gtk.Box = None
 
 		self.widget = Gtk.CheckButton()
 		self.widget.set_active(self.initial_value)
@@ -1095,14 +1136,14 @@ class AIHubExposeBoolean(AIHubExposeBase):
 		return not isinstance(self.get_value(), bool)
 
 class AIHubExposeString(AIHubExposeBase):
-	label: Gtk.Label = None
-	error_label: AIHubLabel = None
-	widget: Gtk.Entry | Gtk.TextView
-	box: Gtk.Box
-	is_multiline: bool = False
+	def __init__(self, id, data, workflow_context, workflow_id, workflow, projectname, apinfo):
+		super().__init__(id, data, workflow_context, workflow_id, workflow, projectname, apinfo)
 
-	def __init__(self, id, data, workflow_context, workflow_id, workflow, projectname):
-		super().__init__(id, data, workflow_context, workflow_id, workflow, projectname)
+		self.label: Gtk.Label = None
+		self.error_label: AIHubLabel = None
+		self.widget: Gtk.Entry | Gtk.TextView = None
+		self.box: Gtk.Box = None
+		self.is_multiline: bool = False
 
 		self.is_multiline = "multiline" in data and data["multiline"]
 		self.widget = Gtk.TextView() if self.is_multiline else Gtk.Entry()
@@ -1175,15 +1216,15 @@ class AIHubExposeString(AIHubExposeBase):
 		return len(self.get_value()) <= self.data["maxlen"] and len(self.get_value()) >= self.data["minlen"]
 
 class AIHubExposeStringSelection(AIHubExposeBase):
-	label: Gtk.Label = None
-	error_label: AIHubLabel = None
-	widget: Gtk.ComboBoxText
-	box: Gtk.Box
-	options: list = []
-	labels: list = []
+	def __init__(self, id, data, workflow_context, workflow_id, workflow, projectname, apinfo):
+		super().__init__(id, data, workflow_context, workflow_id, workflow, projectname, apinfo)
 
-	def __init__(self, id, data, workflow_context, workflow_id, workflow, projectname):
-		super().__init__(id, data, workflow_context, workflow_id, workflow, projectname)
+		self.label: Gtk.Label = None
+		self.error_label: AIHubLabel = None
+		self.widget: Gtk.ComboBoxText = None
+		self.box: Gtk.Box = None
+		self.options: list = []
+		self.labels: list = []
 
 		self.widget = Gtk.ComboBoxText()
 		self.widget.set_entry_text_column(0)
@@ -1253,6 +1294,26 @@ class AIHubExposeStringSelection(AIHubExposeBase):
 		else:
 			self.error_label.hide()
 
+class AIHubExposeScheduler(AIHubExposeStringSelection):
+	def on_model_changed(self, model):
+		if self.data.get("unaffected_by_model_scheduler", False):
+			return
+		default_scheduler = model.get("default_scheduler", None)
+		if default_scheduler is not None and isinstance(default_scheduler, str):
+			self.widget.set_value(default_scheduler)
+			self.on_change(self.get_value())
+			self.check_validity(self.get_value())
+
+class AIHubExposeSampler(AIHubExposeStringSelection):
+	def on_model_changed(self, model):
+		if self.data.get("unaffected_by_model_sampler", False):
+			return
+		default_sampler = model.get("default_sampler", None)
+		if default_sampler is not None and isinstance(default_sampler, str):
+			self.widget.set_value(default_sampler)
+			self.on_change(self.get_value())
+			self.check_validity(self.get_value())
+
 class AIHubExposeConfigBase(AIHubExposeBase):
 	def get_value(self):
 		value = self.read_config_json(self.data["field"])
@@ -1287,11 +1348,507 @@ class AIHubExposeConfigFloat(AIHubExposeBase):
 		if not isinstance(parent_value, float):
 			return self.data["default"]
 		return parent_value
+	
+class AIHubExposeLora(AIHubExposeBase):
+	def __init__(self, id, data, workflow_context, workflow_id, workflow, projectname, apinfo):
+		super().__init__(id, data, workflow_context, workflow_id, workflow, projectname, apinfo)
+
+		self.box: Gtk.Box = None
+		self.image: Gtk.Image = None
+		self.slider: Gtk.Scale = None
+		self.name_label: AIHubLabel = None
+		self.description_label: AIHubLabel = None
+		self.strength: float = 1.0
+		self.enabled: bool = False
+		self.delete_button: Gtk.Button = None
+
+		self.no_image = False
+
+		lora_data = data["lora"]
+
+		if "default_strength" in lora_data and lora_data["default_strength"] is not None and isinstance(lora_data["default_strength"], (int, float)):
+			self.strength = lora_data["default_strength"]
+		else:
+			self.strength = 1.0
+
+		self.enabled = False
+		if self.initial_value is not None and isinstance(self.initial_value, dict):
+			self.strength = self.initial_value["strength"]
+			self.enabled = self.initial_value["enabled"]
+
+		# we want the UI to be a card where an image exist to the left side and the name and description to the right side
+		# as well as a widget under it of a slider 0 to 1 with step 0.05 to determine the strength of the lora
+		self.box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+		self.box.set_size_request(400, 150)
+
+		# time to add the image to the box in the left side
+		self.image = Gtk.Image()
+		self.image.set_size_request(150, 150)
+		self.box.pack_start(self.image, False, False, 0)
+		self.load_image()
+
+		# now to the right side we want a vertical box with the name, description and slider
+		right_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+		self.box.pack_start(right_box, True, True, 0)
+		self.name_label = AIHubLabel(lora_data["name"], b"font-weight: bold;")
+		self.name_label.set_size_request(-1, -1)
+		right_box.pack_start(self.name_label.get_widget(), False, False, 0)
+		self.description_label = AIHubLabel(lora_data["description"], b"font-style: italic;")
+		self.description_label.set_size_request(-1, -1)
+		right_box.pack_start(self.description_label.get_widget(), False, False, 0)
+		self.slider = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 1, 0.05)
+		self.slider.set_value(self.strength)
+		right_box.pack_start(self.slider, True, True, 0)
+
+		self.slider.connect("value-changed", self.on_change_value)
+		self.slider.set_tooltip_text("Set the strength of the LORA model to apply. 0 means no effect, 1 means full effect.")
+
+		self.delete_button = Gtk.Button(label="Remove")
+		self.delete_button.set_tooltip_text("Remove this LORA from the list.")
+		self.delete_button.connect("clicked", self.on_delete)
+		right_box.pack_start(self.delete_button, False, False, 0)
+
+	def load_image(self):
+		lora_id = self.data.get("lora", {}).get("id", None)
+		image_url = f"{"https" if self.apinfo["usehttps"] else "http"}://{self.apinfo["host"]}:{self.apinfo["port"]}/loras/{lora_id}.png"
+		try:
+			response = urllib.request.urlopen(image_url)
+			input_stream = Gio.MemoryInputStream.new_from_data(response.read(), None)
+			pixbuf = Pixbuf.new_from_stream(input_stream, None)
+
+			width = 150
+			# maintain aspect ratio
+			height = int(pixbuf.get_height() * (width / pixbuf.get_width()))
+			scaled_pixbuf = pixbuf.scale_simple(width, height, InterpType.BILINEAR)
+
+			self.image.set_from_pixbuf(scaled_pixbuf)
+			#ensure the image is centered since the aspect ratio might make it smaller
+			self.image.set_halign(Gtk.Align.CENTER)
+			self.image.set_valign(Gtk.Align.CENTER)
+
+		except Exception as e:
+			# if we fail to load the image, we just ignore it
+			self.image.clear()
+			self.no_image = True
+
+	def get_widget(self):
+		return self.box
+	
+	def on_change_value(self, widget):
+		self.strength = widget.get_value()
+		self.on_change(self.get_value())
+
+	def get_value(self):
+		return {
+			"strength": self.slider.get_value(),
+			"enabled": self.enabled,
+		}
+	
+	def set_enabled(self, enabled: bool):
+		self.enabled = enabled
+		if self.enabled:
+			self.box.show()
+		else:
+			self.box.hide()
+		self.on_change(self.get_value())
+
+	def on_delete(self, widget):
+		self.set_enabled(False)
+
+	def is_enabled(self):
+		return self.enabled
+	
+	def set_strength(self, strength: float):
+		self.strength = strength
+		self.slider.set_value(strength)
+		self.on_change(self.get_value())
+
+	def get_file(self):
+		lora_data = self.data["lora"]
+		return lora_data.get("file", None)
+	
+	def get_strength(self):
+		return self.strength
+	
+	def get_use_loader_model_only(self):
+		lora_data = self.data["lora"]
+		return lora_data.get("use_loader_model_only", False)
+
+	def after_ui_built(self):
+		if self.no_image:
+			self.image.hide()
+		else:
+			self.image.show()
+		
+		if not self.enabled:
+			self.box.hide()
+		else:
+			self.box.show()
+
+	def get_list_row(self):
+		row = Gtk.ListBoxRow()
+
+		hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+		row.add(hbox)
+		if not self.no_image:
+			# make a copy of the image
+			new_image = Gtk.Image()
+			new_image.set_from_pixbuf(self.image.get_pixbuf())
+			new_image.set_halign(Gtk.Align.CENTER)
+			new_image.set_valign(Gtk.Align.CENTER)
+			hbox.pack_start(new_image, False, False, 0)
+
+		right_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+		hbox.pack_start(right_box, True, True, 0)
+		right_box.pack_start(self.name_label.get_as_gtk_label(), True, True, 0)
+		right_box.pack_start(self.description_label.get_as_gtk_label(), True, True, 0)
+
+		return row
+
+class AIHubExposeModel(AIHubExposeBase):
+	def __init__(self, id, data, workflow_context, workflow_id, workflow, projectname, apinfo):
+		super().__init__(id, data, workflow_context, workflow_id, workflow, projectname, apinfo)
+
+		self.label: Gtk.Label = None
+		self.error_label: AIHubLabel = None
+		self.widget: Gtk.ComboBoxText = None
+		self.box: Gtk.Box = None
+		self.options: list = []
+		self.labels: list = []
+		self.model: dict = None
+		self.model_image: Gtk.Image = None
+		self.model_description: AIHubLabel = None
+
+		self.loras_add_button: Gtk.Button = None
+		self.loras_box: Gtk.Box = None
+		self.loras_label: Gtk.Label = None
+
+		self.lorasobjects = {}
+
+		self.widget = Gtk.ComboBoxText()
+		self.widget.set_entry_text_column(0)
+
+		# add the options to the combo box
+		# options is actually just a string that is multiline separated, ignore empty lines
+		# the label is optained from a similar field called options_label that works in the same way
+		self.labels = []
+		self.options = []
+
+		for model in data["filtered_models"]:
+			self.options.append(model["id"])
+			self.labels.append(model["name"])
+				
+
+		for i in range(len(self.options)):
+			self.widget.append(self.options[i], self.labels[i])
+
+		# set the initial value if available
+		if self.initial_value is not None and self.initial_value["_id"] in self.options and self.data.get("disable_model_selection", False):
+			self.widget.set_active_id(self.initial_value["_id"])
+			self.model = next((m for m in data["filtered_models"] if m["id"] == self.initial_value["_id"]), None)
+		elif data["model"] is not None and data["model"] in self.options:
+			self.widget.set_active_id(data["model"])
+			self.model = next((m for m in data["filtered_models"] if m["id"] == data["model"]), None)
+		else:
+			self.widget.set_active(0)
+			self.model = next((m for m in data["filtered_models"] if m["id"] == self.widget.get_active_id()), None)
+
+		# add on change event
+		self.widget.connect("changed", self.on_change_value)
+
+		# add a tooltip with the description if any available
+		if "tooltip" in data and data["tooltip"] is not None and data["tooltip"] != "":
+			self.widget.set_tooltip_text(data["tooltip"])
+
+		# make a box to have the label and the field
+		# make the label
+		self.label = Gtk.Label(self.data["label"], xalign=0)
+		self.label.set_size_request(400, -1)
+		self.label.set_line_wrap(True)
+		self.error_label = AIHubLabel("", b"color: red;")
+		self.box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+		self.box.pack_start(self.label, False, False, 0)
+		self.box.pack_start(self.error_label.get_widget(), False, False, 0)
+		self.box.pack_start(self.widget, True, True, 0)
+
+		# add an image to the right of the combo box to show the model preview
+		if not self.data.get("disable_model_selection", False):
+			self.model_image = Gtk.Image()
+			self.model_description = AIHubLabel("", b"font-style: italic;")
+			self.box.pack_start(self.model_image, False, False, 10)
+			self.box.pack_start(self.model_description.get_widget(), False, False, 10)
+
+		if not self.data.get("disable_loras_selection", False):
+			self.loras_label = Gtk.Label("LORAs", xalign=0)
+			self.loras_label.set_size_request(400, -1)
+			self.loras_label.set_line_wrap(True)
+			self.box.pack_start(self.loras_label, False, False, 10)
+
+			# show the loras label for this model, lets make a box to show them
+			self.loras_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+			self.box.pack_start(self.loras_box, True, True, 0)
+
+			css = b"""
+			.loras-border {
+				border: 2px solid #ccc;
+				border-radius: 8px;
+				padding: 12px;
+			}
+			"""
+			style_provider = Gtk.CssProvider()
+			style_provider.load_from_data(css)
+
+			self.loras_box.get_style_context().add_provider(style_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+			self.loras_box.get_style_context().add_class("loras-border")
+
+			self.loras_add_button = Gtk.Button(label="Add LORA")
+			self.loras_add_button.set_tooltip_text("Add a LORA to this model.")
+
+			self.loras_add_button.connect("clicked", self.on_add_lora_clicked)
+			self.box.pack_start(self.loras_add_button, False, False, 10)
+
+		if self.model is not None:
+			if not self.data.get("disable_model_selection", False):
+				self.load_model_image_and_description()
+			if not self.data.get("disable_loras_selection", False):
+				self.recalculate_loras()
+
+	def load_model_image_and_description(self):
+		model_id = self.widget.get_active_id()
+
+		image_url = f"{"https" if self.apinfo["usehttps"] else "http"}://{self.apinfo["host"]}:{self.apinfo["port"]}/models/{model_id}.png"
+		try:
+			response = urllib.request.urlopen(image_url)
+			input_stream = Gio.MemoryInputStream.new_from_data(response.read(), None)
+			pixbuf = Pixbuf.new_from_stream(input_stream, None)
+
+			width = 400
+			height = int(pixbuf.get_height() * (width / pixbuf.get_width()))
+			scaled_pixbuf = pixbuf.scale_simple(width, height, InterpType.BILINEAR)
+
+			self.model_image.set_from_pixbuf(scaled_pixbuf)
+		except Exception as e:
+			# if we fail to load the image, we just ignore it
+			self.model_image.clear()
+
+		# also the description if available, we just set it
+		if "description" in self.model and self.model["description"] is not None and self.model["description"] != "":
+			self.model_description.set_text(self.model['description'])
+		else:
+			self.model_description.set_text("No description provided.")
+
+	def recalculate_loras(self):
+		new_loras = []
+		for lora in self.data["filtered_loras"]:
+			if lora["limit_to_model"] is None or lora["limit_to_model"] == self.model["id"]:
+				new_loras.append(lora)
+
+		new_loras_ids = [l["id"] for l in new_loras]
+
+		# check our lorasobjects and remove the ones that are not in new_loras
+		for lora_id in list(self.lorasobjects.keys()):
+			if lora_id not in new_loras_ids:
+				# remove the widget from the box
+				self.loras_box.remove(self.lorasobjects[lora_id].get_widget())
+				del self.lorasobjects[lora_id]
+
+		# add the new loras that are not in lorasobjects
+		splitted_loras = []
+		splitted_strengths = []
+
+		if "loras" in self.data and self.data["loras"] is not None and self.data["loras"] != "":
+			splitted_loras = [lora.strip() for lora in self.data["loras"].split(",")]
+
+		if "loras_strengths" in self.data and self.data["loras_strengths"] is not None and self.data["loras_strengths"] != "":
+			splitted_strengths = [s.strip() for s in self.data["loras_strengths"].split(",")]
+
+		for lora in new_loras:
+			if lora["id"] not in self.lorasobjects:
+				newinstance = AIHubExposeLora([self.id, "_loras", lora["id"]], {
+					"lora": lora,
+				}, self.workflow_context, self.workflow_id, self.workflow, self.projectname, self.apinfo)
+				self.lorasobjects[lora["id"]] = newinstance
+				newinstance.hook_on_change_fn_hijack(self.on_lora_changed)
+				
+				# this means no value was loaded also for the lora either
+				# so we don't need to override the strength or enabled state
+				# since the lora will load from the same data
+				if self.initial_value is None:
+					# check if the lora is in splitted_loras and if so, set the strength and enabled state
+					if lora["id"] in splitted_loras:
+						index = splitted_loras.index(lora["id"])
+						if index < len(splitted_strengths):
+							try:
+								strength = float(splitted_strengths[index])
+								self.lorasobjects[lora["id"]].set_strength(strength)
+								self.lorasobjects[lora["id"]].set_enabled(True)
+							except:
+								pass
+
+				# add the widget to the box
+				self.loras_box.pack_start(self.lorasobjects[lora["id"]].get_widget(), False, False, 0)
+
+	def on_listbox_button_press(self, widget, event):
+		# ensure only to happen on left click
+		if event.type != Gdk.EventType.BUTTON_PRESS or event.button != 1:
+			return False
+		
+		y = int(event.y)
+		row = widget.get_row_at_y(y)
+		if row:
+			if row.get_style_context().has_class("selected"):
+				row.get_style_context().remove_class("selected")
+			else:
+				row.get_style_context().add_class("selected")
+			return True
+		return False
+
+	def on_add_lora_clicked(self, widget):
+		# we are going to create a dialog to select the lora to add from all our list of loras
+		dialog = Gtk.Dialog(title="Select LORA to add", transient_for=None, flags=0)
+		# make the dialog be on top of everything
+		dialog.set_modal(True)
+		dialog.set_keep_above(True)
+		# add a cancel and add button
+		dialog.add_button("Add", Gtk.ResponseType.OK)
+		dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
+
+		# make the dialog close when the user presses escape or clicks outside
+		dialog.set_deletable(True)
+
+		dialog.set_default_size(600, 600)
+		#make it so it has a scrollbar and a list of loras to select from
+		content_area = dialog.get_content_area()
+		scrolled_window = Gtk.ScrolledWindow()
+		scrolled_window.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+		content_area.pack_start(scrolled_window, True, True, 0)
+		listbox = Gtk.ListBox()
+		scrolled_window.add(listbox)
+		listbox.set_selection_mode(Gtk.SelectionMode.NONE)
+
+		listbox.connect("button-press-event", self.on_listbox_button_press)
+
+		for lora_id, lora in self.lorasobjects.items():
+			if not lora.is_enabled():
+				row = lora.get_list_row()
+
+				# set an id to the row so we can identify it later
+				row.set_name(lora_id)
+
+				# make the row change color when selected
+				# remember to add the color to the Gtk.Label as well
+				css = b"""
+				row.selected {
+					background-color: #007acc;
+					border: 2px solid #005f99;
+					border-radius: 8px;
+					padding: 12px;
+					color: white;
+				}
+				row:not(.selected) {
+					background-color: transparent;
+					border: 2px solid #ccc;
+					border-radius: 8px;
+					padding: 12px;
+					color: white;
+				}
+				"""
+				style_provider = Gtk.CssProvider()
+				style_provider.load_from_data(css)
+
+				row.get_style_context().add_provider(style_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+				listbox.add(row)
+
+		dialog.show_all()
+		# run the dialog and get the response
+		response = dialog.run()
+
+		if response == Gtk.ResponseType.OK:
+			dialog.destroy()
+			# we need to get all rows and filter the selected ones based on the class
+			selected_rows = [row for row in listbox.get_children() if row.get_style_context().has_class("selected")]
+			for row in selected_rows:
+				lora_id = row.get_name()
+				if lora_id is not None:
+					self.lorasobjects[lora_id].set_enabled(True)
+		else:
+			# cancel pressed destroy the dialog
+			dialog.destroy()
+		
+	def get_value(self):
+		if self.model is None:
+			return None
+		
+		_loras = {}
+		enabled_loras_list = []
+		for lora_id, lora_value in self.lorasobjects.items():
+			if lora_value.is_enabled():
+				_loras[lora_id] = lora_value.get_value()
+				enabled_loras_list.append(lora_value)
+
+		return {
+			"_id": self.model.get("id", None),
+			"_loras": _loras,
+
+			"model": self.model.get("file", None),
+			"is_diffusion_model": self.model.get("is_diffusion_model", False),
+			"diffusion_model_weight_dtype": self.model.get("diffusion_model_weight_dtype", None),
+			"optional_vae": self.model.get("vae_file", None),
+			"optional_clip": self.model.get("clip_file", None),
+			"optional_clip_type": self.model.get("clip_type", None),
+
+			"loras": ",".join([l.get_file() for l in enabled_loras_list]),
+			"loras_strengths": ",".join([str(l.get_strength()) for l in enabled_loras_list]),
+			"loras_use_loader_model_only": ",".join([("t" if l.get_use_loader_model_only() else "f") for l in enabled_loras_list])
+		}
+
+	def get_widget(self):
+		return self.box
+	
+	def on_lora_changed(self, value):
+		self.on_change(self.get_value())
+	
+	def on_change_value(self, widget):
+		self.model = next((m for m in self.data["filtered_models"] if m["id"] == self.widget.get_active_id()), None)
+		if self.model is None:
+			self.error_label.show()
+			self.error_label.set_text("Selected model is not valid.")
+			return
+		else:
+			self.error_label.hide()
+		
+		# the model is ours, we need to update the image
+		self.load_model_image_and_description()
+
+		self.on_change(self.get_value())
+
+	def can_run(self):
+		return self.get_value() in self.options
+	
+	def after_ui_built(self):
+		for lora in self.lorasobjects.values():
+			lora.after_ui_built()
+
+		if self.data.get("disable_model_selection", False):
+			if self.data["model"] is None:
+				self.error_label.show()
+				self.error_label.set_text("The model selection is disabled but no model is set.")
+				return
+			if not self.data["model"] in self.options:
+				self.error_label.show()
+				self.error_label.set_text(f"The model selection is disabled but the set model {self.data['model']} is not available.")
+				return
+
+		if self.model is None:
+			self.error_label.show()
+			self.error_label.set_text("There are no models available for this workflow")
+		else:
+			self.error_label.hide()
 
 EXPOSES = {
 	"AIHubExposeInteger": AIHubExposeInteger,
-	"AIHubExposeSteps": AIHubExposeInteger,
-	"AIHubExposeCfg": AIHubExposeFloat,
+	"AIHubExposeSteps": AIHubExposeSteps,
+	"AIHubExposeCfg": AIHubExposeCfg,
 	"AIHubExposeConfigInteger": AIHubExposeConfigInteger,
 	"AIHubExposeConfigString": AIHubExposeConfigString,
 	"AIHubExposeConfigBoolean": AIHubExposeConfigBoolean,
@@ -1304,6 +1861,7 @@ EXPOSES = {
 	"AIHubExposeImageInfoOnly": AIHubExposeImageInfoOnly,
 	"AIHubExposeImageBatch": AIHubExposeImageBatch,
 	"AIHubExposeSeed": AIHubExposeSeed,
-	"AIHubExposeSampler": AIHubExposeStringSelection,
-	"AIHubExposeScheduler": AIHubExposeStringSelection
+	"AIHubExposeSampler": AIHubExposeSampler,
+	"AIHubExposeScheduler": AIHubExposeScheduler,
+	"AIHubExposeModel": AIHubExposeModel,
 }

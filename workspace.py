@@ -129,25 +129,31 @@ def update_aihub_common_property_value(workflow_context: str, workflow_id: str, 
 		# represent indexes in lists
 		current_level = saved_properties[workflow_context][workflow_id]
 		# we don't want to traverse the last element, because that is the one we want to set
-		for key in property_id[:-1]:
+		for index in range(len(property_id[:-1])):
+			key = property_id[index]
+			next_key = property_id[index+1]
+
+			expected_next_level = None
 			if isinstance(key, int) and isinstance(current_level, list) and 0 <= key < len(current_level):
-				current_level = current_level[key]
+				expected_next_level = current_level[key]
 			elif isinstance(key, str) and isinstance(current_level, dict) and key in current_level:
+				expected_next_level = current_level[key]
+			else:
+				expected_next_level = None
+			
+			if expected_next_level is None:
+				current_level[key] = {} if isinstance(next_key, str) else []
+				if isinstance(next_key, int):
+					# if the next key is an index, we need to ensure the list is big enough
+					while len(current_level[key]) <= next_key:
+						current_level[key].append(None)
 				current_level = current_level[key]
 			else:
-				current_level = None
-				break
+				current_level = expected_next_level
+
 		if current_level is not None:
 			last_key = property_id[-1]
-			if isinstance(last_key, int) and isinstance(current_level, list) and last_key >= 0:
-				# if the index is out of range, we need to extend the list
-				while len(current_level) <= last_key:
-					current_level.append(None)
-				current_level[last_key] = value
-			elif isinstance(last_key, str) and isinstance(current_level, dict):
-				current_level[last_key] = value
-			else:
-				return None
+			current_level[last_key] = value
 	else:
 		saved_properties[workflow_context][workflow_id][property_id] = value
 

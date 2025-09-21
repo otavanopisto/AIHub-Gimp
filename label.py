@@ -1,7 +1,6 @@
 from gi.repository import Gtk # type: ignore
 
 class AIHubLabel:
-	widget: Gtk.TextView
 	def __init__(self, text, css_extra: bytes = None):
 		self.text = text
 		self.widget = Gtk.TextView()
@@ -31,6 +30,13 @@ class AIHubLabel:
 	def get_widget(self):
 		return self.widget
 	
+	def get_as_gtk_label(self):
+		label = Gtk.Label()
+		label.set_text(self.text)
+		label.set_line_wrap(True)
+		label.set_xalign(0)  # Align left
+		return label
+	
 	def set_tooltip_text(self, text):
 		self.widget.set_tooltip_text(text)
 
@@ -49,3 +55,6 @@ class AIHubLabel:
 	
 	def hide(self):
 		self.widget.hide()
+
+	def set_size_request(self, width, height):
+		self.widget.set_size_request(width, height)

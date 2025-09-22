@@ -149,7 +149,16 @@ class AIHubExposeBase:
 		self.on_change_callback = fn
 		self.on_change_callback_hijack = True
 
+	def get_ui_label_identifier(self):
+		return self.data["label"]
+	
+	def get_special_priority(self):
+		return 0
+
 class AIHubExposeImage(AIHubExposeBase):
+	def get_special_priority(self):
+		return 100
+	
 	def __init__(self, id, data, workflow_context, workflow_id, workflow, projectname, apinfo):
 		super().__init__(id, data, workflow_context, workflow_id, workflow, projectname, apinfo)
 
@@ -366,8 +375,6 @@ class AIHubExposeImage(AIHubExposeBase):
 			"if_not_exists": True
 		}
 
-		print("Uploading file", file_to_upload, "with hash", upload_file_hash)
-
 		relegator.reset()
 
 		ws.send(json.dumps(binary_header))
@@ -451,7 +458,6 @@ class AIHubExposeImage(AIHubExposeBase):
 		):
 			# this is our current GIMP image
 			image_selected = self.current_image
-			print(image_selected)
 			if image_selected is not None:
 				layers = image_selected.get_selected_layers()
 				current_layer = None
@@ -703,7 +709,7 @@ class AIHubExposeImage(AIHubExposeBase):
 			if (self.selected_image is None):
 				self.error_label.show()
 				self.success_label.hide()
-				self.error_label.set_text("Please create and select an active image from the dropdown that is not empty.")
+				self.error_label.set_text("There is no active image/layer in GIMP.")
 			else:
 				self.error_label.hide()
 				self.success_label.hide()
@@ -721,6 +727,9 @@ class AIHubExposeImageInfoOnly(AIHubExposeImage):
 		self.info_only_mode = True
 
 class AIHubExposeImageBatch(AIHubExposeBase):
+	def get_special_priority(self):
+		return 100
+	
 	def get_widget_for_expose(self, expose):
 		usual_widget = expose.get_widget()
 
@@ -859,12 +868,14 @@ class AIHubExposeInteger(AIHubExposeBase):
 		self.on_change(widget.get_value_as_int())
 
 	def check_validity(self, value):
+		min = self.data["min"] if "min" in self.data else None
+		max = self.data["max"] if "max" in self.data else None
 		if not isinstance(value, int):
 			self.error_label.show()
 			self.error_label.set_text("Value must be an integer.")
-		elif not (self.data["min"] <= value <= self.data["max"]):
+		elif not (min is None or value >= min) or not (max is None or value <= max):
 			self.error_label.show()
-			self.error_label.set_text(f"Value must be between {self.data['min']} and {self.data['max']}.")
+			self.error_label.set_text(f"Value must be between {min or '-Infinity'} and {max or 'Infinity'}.")
 		else:
 			self.error_label.hide()
 
@@ -872,7 +883,10 @@ class AIHubExposeInteger(AIHubExposeBase):
 		self.check_validity(self.get_value())
 
 	def can_run(self):
-		return self.data["min"] <= self.get_value() <= self.data["max"]
+		min = self.data["min"] if "min" in self.data else None
+		max = self.data["max"] if "max" in self.data else None
+		value = self.get_value()
+		return (min is None or value >= min) and (max is None or value <= max)
 
 class AIHubExposeSeed(AIHubExposeBase):
 	def __init__(self, id, data, workflow_context, workflow_id, workflow, projectname, apinfo):
@@ -917,9 +931,6 @@ class AIHubExposeSeed(AIHubExposeBase):
 		self.widget_value.append("random", "Random")
 		self.widget_value.append("fixed", "Fixed")
 
-		self.widget_value_fixed.connect("changed", self.on_change_value)
-		self.widget_value.connect("changed", self.on_change_value)
-
 		# set the initial value if available
 		if (
 			isinstance(self.initial_value, dict) and
@@ -930,8 +941,6 @@ class AIHubExposeSeed(AIHubExposeBase):
 			self.widget_value.set_active_id(self.initial_value["value"])
 		else:
 			self.widget_value.set_active_id("random")
-
-		self.ensure_value_fixed_visibility_state()
 
 		# make a box to have the label and the field
 		# make the label
@@ -948,6 +957,11 @@ class AIHubExposeSeed(AIHubExposeBase):
 
 		# ensure to add spacing from the top some margin top
 		self.box.set_margin_top(10)
+
+		self.ensure_value_fixed_visibility_state()
+
+		self.widget_value_fixed.connect("changed", self.on_change_value)
+		self.widget_value.connect("changed", self.on_change_value)
 
 	def get_value_internal(self):
 		return {
@@ -1048,18 +1062,26 @@ class AIHubExposeFloat(AIHubExposeBase):
 	def on_change_value(self, widget):
 		self.on_change(widget.get_value())
 
-	def can_run(self):
-		return self.data["min"] <= self.get_value() <= self.data["max"]
-	
 	def check_validity(self, value):
+		min = self.data["min"] if "min" in self.data else None
+		max = self.data["max"] if "max" in self.data else None
 		if not isinstance(value, float):
 			self.error_label.show()
-			self.error_label.set_text("Value must be an float.")
-		elif not (self.data["min"] <= value <= self.data["max"]):
+			self.error_label.set_text("Value must be a float.")
+		elif not (min is None or value >= min) or not (max is None or value <= max):
 			self.error_label.show()
-			self.error_label.set_text(f"Value must be between {self.data['min']} and {self.data['max']}.")
+			self.error_label.set_text(f"Value must be between {min or '-Infinity'} and {max or 'Infinity'}.")
 		else:
 			self.error_label.hide()
+
+	def after_ui_built(self):
+		self.check_validity(self.get_value())
+
+	def can_run(self):
+		min = self.data["min"] if "min" in self.data else None
+		max = self.data["max"] if "max" in self.data else None
+		value = self.get_value()
+		return (min is None or value >= min) and (max is None or value <= max)
 
 	def after_ui_built(self):
 		self.check_validity(self.get_value())
@@ -1136,6 +1158,11 @@ class AIHubExposeBoolean(AIHubExposeBase):
 		return not isinstance(self.get_value(), bool)
 
 class AIHubExposeString(AIHubExposeBase):
+	def get_special_priority(self):
+		if self.data.get("multiline", False):
+			return 50
+		return 0
+	
 	def __init__(self, id, data, workflow_context, workflow_id, workflow, projectname, apinfo):
 		super().__init__(id, data, workflow_context, workflow_id, workflow, projectname, apinfo)
 
@@ -1295,6 +1322,16 @@ class AIHubExposeStringSelection(AIHubExposeBase):
 			self.error_label.hide()
 
 class AIHubExposeScheduler(AIHubExposeStringSelection):
+	def on_model_changed(self, model):
+		if self.data.get("unaffected_by_model_scheduler", False):
+			return
+		default_scheduler = model.get("default_scheduler", None)
+		if default_scheduler is not None and isinstance(default_scheduler, str):
+			self.widget.set_value(default_scheduler)
+			self.on_change(self.get_value())
+			self.check_validity(self.get_value())
+
+class AIHubExposeExtendableScheduler(AIHubExposeStringSelection):
 	def on_model_changed(self, model):
 		if self.data.get("unaffected_by_model_scheduler", False):
 			return
@@ -1506,6 +1543,8 @@ class AIHubExposeLora(AIHubExposeBase):
 		return row
 
 class AIHubExposeModel(AIHubExposeBase):
+	def get_special_priority(self):
+		return 1000
 	def __init__(self, id, data, workflow_context, workflow_id, workflow, projectname, apinfo):
 		super().__init__(id, data, workflow_context, workflow_id, workflow, projectname, apinfo)
 
@@ -1790,12 +1829,12 @@ class AIHubExposeModel(AIHubExposeBase):
 			"_id": self.model.get("id", None),
 			"_loras": _loras,
 
-			"model": self.model.get("file", None),
-			"is_diffusion_model": self.model.get("is_diffusion_model", False),
-			"diffusion_model_weight_dtype": self.model.get("diffusion_model_weight_dtype", None),
-			"optional_vae": self.model.get("vae_file", None),
-			"optional_clip": self.model.get("clip_file", None),
-			"optional_clip_type": self.model.get("clip_type", None),
+			"model": self.model.get("file", "") or "",
+			"is_diffusion_model": self.model.get("is_diffusion_model", False) or False,
+			"diffusion_model_weight_dtype": self.model.get("diffusion_model_weight_dtype", 0) or 0,
+			"optional_vae": self.model.get("vae_file", "") or "",
+			"optional_clip": self.model.get("clip_file", "") or "",
+			"optional_clip_type": self.model.get("clip_type", "") or "",
 
 			"loras": ",".join([l.get_file() for l in enabled_loras_list]),
 			"loras_strengths": ",".join([str(l.get_strength()) for l in enabled_loras_list]),
@@ -1823,14 +1862,19 @@ class AIHubExposeModel(AIHubExposeBase):
 		self.on_change(self.get_value())
 
 	def can_run(self):
-		return self.get_value() in self.options
+		if self.data.get("disable_model_selection", False):
+			if self.data["model"] is None or not self.data["model"]:
+				return False
+			if not self.data["model"] in self.options:
+				return False
+		return self.model is not None
 	
 	def after_ui_built(self):
 		for lora in self.lorasobjects.values():
 			lora.after_ui_built()
 
 		if self.data.get("disable_model_selection", False):
-			if self.data["model"] is None:
+			if self.data["model"] is None or not self.data["model"]:
 				self.error_label.show()
 				self.error_label.set_text("The model selection is disabled but no model is set.")
 				return
@@ -1863,5 +1907,6 @@ EXPOSES = {
 	"AIHubExposeSeed": AIHubExposeSeed,
 	"AIHubExposeSampler": AIHubExposeSampler,
 	"AIHubExposeScheduler": AIHubExposeScheduler,
+	"AIHubExposeExtendableScheduler": AIHubExposeExtendableScheduler,
 	"AIHubExposeModel": AIHubExposeModel,
 }

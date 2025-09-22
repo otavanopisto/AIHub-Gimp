@@ -164,7 +164,8 @@ def handle_project_file(
 			# we are going to add a new layer to the current image
 			# first lets make a pixbuf from the file at finalpath
 			pixbuf = Pixbuf.new_from_file(finalpath)
-			layer = Gimp.Layer.new_from_pixbuf(current_image, "test", pixbuf, 100, Gimp.LayerMode.NORMAL, 0, 100)
+			new_name = action.get("name", "AI Hub Layer")
+			layer = Gimp.Layer.new_from_pixbuf(current_image, new_name, pixbuf, 100, Gimp.LayerMode.NORMAL, 0, 100)
 			reference_layer_raw = action.get("reference_layer_id", None)
 			reference_layer_id = int(reference_layer_raw) if reference_layer_raw is not None and reference_layer_raw.isdigit() else None
 			reference_layer = None if reference_layer_id is None else Gimp.Layer.get_by_id(reference_layer_id)
@@ -190,9 +191,9 @@ def handle_project_file(
 					current_image.insert_layer(layer, parent_layer, reference_layer_index)
 				elif reference_layer_action == "REPLACE":
 					# in order to avoid destructive actions, we are going to insted
-					# hide it
+					# hide it and set it before the new layer
 					reference_layer.set_visible(False)
-					current_image.insert_layer(layer, parent_layer, reference_layer_index)
+					current_image.insert_layer(layer, parent_layer, reference_layer_index + 1)
 
 				layer.set_offsets(pos_x, pos_y)
 
@@ -306,7 +307,10 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 						
 						try:
 							self.setStatus("Status: Ready")
-							self.build_ui_base()
+							if threading.current_thread() is threading.main_thread():
+								self.build_ui_base()
+							else:
+								GLib.idle_add(self.build_ui_base)
 						except Exception as e:
 							self.setStatus(f"Status: Error building UI: {e}")
 							self.setErrored()
@@ -645,6 +649,26 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 						data["options"] = "\n".join(self.schedulers)
 						data["options_label"] = "\n".join(self.schedulers)
 
+					elif type == "AIHubExposeExtendableScheduler":
+						blacklist_raw = data.get("blacklist", "")
+						blacklist_values = [b.strip() for b in blacklist_raw.split("\n") if b.strip() != ""]
+						blacklist = blacklist_values if len(blacklist_values) > 0 else None
+						blacklist_all = data.get("blacklist_all", False)
+						extras_raw_splitted = data.get("extras", "").split("\n")
+						extras = [e.strip() for e in extras_raw_splitted if e.strip() != ""]
+
+
+						final_schedulers = [scheduler for scheduler in self.schedulers if
+							(blacklist is None or scheduler not in blacklist) and
+							(blacklist_all is False)
+						]
+
+						final_schedulers.extend(extras)
+
+						# add the schedulers to the options
+						data["options"] = "\n".join(final_schedulers)
+						data["options_label"] = "\n".join(final_schedulers)
+
 					elif type == "AIHubExposeModel":
 						# add the models to the options, models is a list and we need to get the id and name from each model
 						# and join them with a newline
@@ -691,7 +715,9 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 							instance.hook_on_change_fn(self.on_model_changed)
 				
 				# now we have to sort self.workflow_elements_all by the get_index function that returns a number
-				self.workflow_elements_all.sort(key=lambda x: x.get_index())
+				# if two elements return the same number, then we sort them by their get_special_priority function that returns a number
+				# the highest number goes first in the case of get_special_priority
+				self.workflow_elements_all.sort(key=lambda x: (x.get_index(), -x.get_special_priority()))
 
 				# now we will loop through all the workflow_elements_all that are not marked as advanced and append them to the self.workflow_elements box
 				# provided that they return a widget
@@ -789,7 +815,7 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 							buttons=Gtk.ButtonsType.OK,
 							text="Some input fields are invalid.",
 						)
-						dialog.format_secondary_text("Please check the input values and try again.")
+						dialog.format_secondary_text("Please check the value for \"" + element.get_ui_label_identifier() + "\" and try again.")
 						dialog.show()
 						# make the dialog on top of everything
 						dialog.set_keep_above(True)

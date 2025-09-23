@@ -24,8 +24,8 @@ gettext.textdomain(textdomain)
 _ = gettext.gettext
 
 import sys
-sys.stderr = open('err.txt', 'a')
-sys.stdout = open('log.txt', 'a')
+#sys.stderr = open('err.txt', 'a')
+#sys.stdout = open('log.txt', 'a')
 
 PROC_NAME = "AI Hub"
 
@@ -47,12 +47,21 @@ def set_active_image_id(combobox, image_id):
 def getAllAvailableContextFromWorkflows(workflows):
 	return list(set(workflow["context"] for workflow in workflows.values()))
 
+def removeDuplicatesFromList(lst):
+	seen = set()
+	result = []
+	for item in lst:
+		if item not in seen:
+			seen.add(item)
+			result.append(item)
+	return result
+
 def getAvailableCategoriesFromWorkflows(workflows, contexts):
 	"""
 	Returns a dictionary where the key are the workflow context and the values
 	are a list that represent the given categories for that workflow context.
 	"""
-	return {context: [workflow["category"] for workflow in workflows.values() if workflow["context"] == context]
+	return {context: removeDuplicatesFromList([workflow["category"] for workflow in workflows.values() if workflow["context"] == context])
 			for context in contexts}
 
 def acquire_process_lock(port=54321):
@@ -237,6 +246,23 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 		def setErrored(self):
 			self.errored = True
 
+			if hasattr(self, "image_selector") and self.image_selector is not None:
+				self.image_selector.set_sensitive(False)
+			if hasattr(self, "context_selector") and self.context_selector is not None:
+				self.context_selector.set_sensitive(False)
+			if hasattr(self, "category_selector") and self.category_selector is not None:
+				self.category_selector.set_sensitive(False)
+			if hasattr(self, "workflow_selector") and self.workflow_selector is not None:
+				self.workflow_selector.set_sensitive(False)
+			# make the run button disabled or enabled
+			if hasattr(self, "run_button") and self.run_button is not None:
+				self.run_button.set_sensitive(False)
+
+			if hasattr(self, "workflow_elements_all") and self.workflow_elements_all is not None:
+				for element in self.workflow_elements_all:
+					if element.get_widget():
+						element.get_widget().set_sensitive(False)
+
 		def on_message(self, ws, msg):
 			if self.errored:
 				return
@@ -349,10 +375,29 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 					elif message_parsed["type"] == "WORKFLOW_FINISHED":
 						if self.is_running:
 							self.mark_as_running(False)
+							# because it is guaranteed that the workflow that ran is the one that finished we are
+							# just going to grab the name from the combo box
+							workflow_name = self.workflow_selector.get_active_text() if self.workflow_selector is not None else "unknown"
 							if message_parsed["error"]:
-								self.setStatus(f"Status: Workflow {message_parsed.get('workflow_id', 'unknown')} finished with error: {message_parsed.get('error_message', 'No message provided')}")
+								self.setStatus(f"Status: Workflow {workflow_name} finished with error: {message_parsed.get('error_message', 'No message provided')}")
 							else:
-								self.setStatus(f"Status: Workflow {message_parsed.get('workflow_id', 'unknown')} finished successfully; ready for another run.")
+								self.setStatus(f"Status: Workflow {workflow_name} finished successfully; ready for another run.")
+					elif message_parsed["type"] == "WORKFLOW_STATUS":
+						if self.is_running:
+							node_name = message_parsed.get("node_name", "unknown")
+							progress = message_parsed.get("progress", 0)
+							total = message_parsed.get("total", 1)
+
+							# we are not sure the value may be integer or float, but we want to display with the least amount of decimals
+							# regardless of which type it is, a float with no decimals should be displayed same as integer
+							if isinstance(progress, float):
+								if progress.is_integer():
+									progress = int(progress)
+							if isinstance(total, float):
+								if total.is_integer():
+									total = int(total)
+
+							self.setStatus(f"Status: Running {node_name} ({progress}/{total})")
 					else:
 						if self.is_running:
 							self.mark_as_running(False)
@@ -523,7 +568,8 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 
 				# now start by adding the categories for that specific context that was selected
 				for category in self.workflow_categories.get(selected_context, []):
-					self.category_selector.append(category, category.upper())
+					# capitalize the first letter of each word in the category
+					self.category_selector.append(category, category.capitalize())
 
 				self.main_box.show_all()
 
@@ -553,14 +599,16 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 				# the workflows have to be filtered by hand because they are a dictionary of key values and we must check
 				# by the context and the category that they match
 				first_workflow = None
+				workflows_for_category = []
 				for workflow in self.workflows.values():
 					if workflow["context"] == selected_context and workflow["category"] == selected_category:
 						self.workflow_selector.append(workflow["id"], workflow["label"])
+						workflows_for_category.append(workflow["id"])
 						if not first_workflow:
 							first_workflow = workflow["id"]
 
 				default_workflow = get_aihub_common_property_value("", selected_context + "/" + selected_category, "default_workflow", None)
-				if default_workflow is None or not self.workflow_categories[selected_context].count(default_workflow):
+				if default_workflow is None or not workflows_for_category.count(default_workflow):
 					default_workflow = first_workflow
 
 				self.main_box.show_all()
@@ -878,11 +926,26 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 			else:
 				self.setStatus("Status: Ready")
 
+			if not running:
+				# the reason we force this focus is because the dialog remains static while it is running
+				# and it may had been focused during that phase, so we force it to refocus once it is done
+				# so that the user can see the updated status
+				self.on_dialog_focus(None, None)
+
 		def on_open(self, ws):
+			self.connected = True
 			self.setStatus("Status: Connected to server, waiting for workflows information")
 
-		def on_close(self, ws):
-			self.setStatus("Status: Disconnected from server.")
+		def on_close(self, ws, close_status_code, close_msg):
+			if not self.connected:
+				self.setStatus("Error: Could not connect to server " + self.apihost + ":" + str(self.apiport))
+				self.setErrored()
+				return
+			self.setStatus("Error: Disconnected from server")
+			self.setErrored()
+
+		def on_error(self, ws, error):
+			self.setStatus(f"Error: {str(error)}")
 			self.setErrored()
 
 		def start_websocket(self):
@@ -892,6 +955,7 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 					on_message=self.on_message,
 					on_open=self.on_open,
 					on_close=self.on_close,
+					on_error=self.on_error,
 					header={"api-key": self.apikey}
 				)
 				self.websocket.run_forever()
@@ -904,6 +968,8 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 		def __init__(self):
 			#use_header_bar = Gtk.Settings.get_default().get_property("gtk-dialogs-use-header")
 			#GimpUi.Dialog.__init__(self, use_header_bar=use_header_bar)
+
+			self.connected: bool = False
 
 			self.message_label: Gtk.TextView
 			self.websocket: WebSocketApp
@@ -995,12 +1061,23 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 
 			self.message_label.set_tooltip_text("Shows the current status of the plugin as it communicates with the server and operates")
 
+			message_label_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+			message_label_box.set_halign(Gtk.Align.START)
+			#add padding to the message label box
+			message_label_box.set_margin_start(12)
+			message_label_box.set_margin_end(12)
+			# add horizontal padding too
+			message_label_box.set_margin_top(12)
+			message_label_box.set_margin_bottom(12)
+
 			buffer = self.message_label.get_buffer()
 			buffer.set_text("Status: Connecting to server...")
 
-			self.main_box.pack_start(self.message_label, False, False, 0)
+			message_label_box.pack_start(self.message_label, False, False, 0)
+			#self.main_box.pack_start(self.message_label, False, False, 0)
 
 			contents_area = Gtk.Dialog.get_content_area(self)
+			contents_area.pack_start(message_label_box, False, False, 0)
 			#contents_area.pack_start(self.main_box, True, True, 0)
 
 			# add a scrollbar if it overflows
@@ -1052,6 +1129,8 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 			Gtk.main()
 
 		def on_dialog_focus(self, widget, event):
+			if self.errored or self.is_running:
+				return
 			# call the function in all the workflow_elements_all to notify them that the dialog has been focused
 			self.refresh_image_list(True)
 			for element in self.workflow_elements_all:

@@ -1351,35 +1351,35 @@ class AIHubExposeSampler(AIHubExposeStringSelection):
 			self.on_change(self.get_value())
 			self.check_validity(self.get_value())
 
-class AIHubExposeConfigBase(AIHubExposeBase):
+class AIHubExposeProjectConfigBase(AIHubExposeBase):
 	def get_value(self):
 		value = self.read_config_json(self.data["field"])
 		if value is None:
 			value = self.data["default"]
 		return value
-	
-class AIHubExposeConfigString(AIHubExposeBase):
+
+class AIHubExposeProjectConfigString(AIHubExposeProjectConfigBase):
 	def get_value(self):
 		parent_value = super().get_value()
 		if not isinstance(parent_value, str):
 			return self.data["default"]
 		return parent_value
 	
-class AIHubExposeConfigInteger(AIHubExposeBase):
+class AIHubExposeProjectConfigInteger(AIHubExposeProjectConfigBase):
 	def get_value(self):
 		parent_value = super().get_value()
 		if not isinstance(parent_value, int):
 			return self.data["default"]
 		return parent_value
 	
-class AIHubExposeConfigBoolean(AIHubExposeBase):
+class AIHubExposeProjectConfigBoolean(AIHubExposeProjectConfigBase):
 	def get_value(self):
 		parent_value = super().get_value()
 		if not isinstance(parent_value, bool):
 			return self.data["default"]
 		return parent_value
 	
-class AIHubExposeConfigFloat(AIHubExposeBase):
+class AIHubExposeProjectConfigFloat(AIHubExposeProjectConfigBase):
 	def get_value(self):
 		parent_value = super().get_value()
 		if not isinstance(parent_value, float):
@@ -1893,10 +1893,10 @@ EXPOSES = {
 	"AIHubExposeInteger": AIHubExposeInteger,
 	"AIHubExposeSteps": AIHubExposeSteps,
 	"AIHubExposeCfg": AIHubExposeCfg,
-	"AIHubExposeConfigInteger": AIHubExposeConfigInteger,
-	"AIHubExposeConfigString": AIHubExposeConfigString,
-	"AIHubExposeConfigBoolean": AIHubExposeConfigBoolean,
-	"AIHubExposeConfigFloat": AIHubExposeConfigFloat,
+	"AIHubExposeProjectConfigInteger": AIHubExposeProjectConfigInteger,
+	"AIHubExposeProjectConfigString": AIHubExposeProjectConfigString,
+	"AIHubExposeProjectConfigBoolean": AIHubExposeProjectConfigBoolean,
+	"AIHubExposeProjectConfigFloat": AIHubExposeProjectConfigFloat,
 	"AIHubExposeFloat": AIHubExposeFloat,
 	"AIHubExposeBoolean": AIHubExposeBoolean,
 	"AIHubExposeString": AIHubExposeString,

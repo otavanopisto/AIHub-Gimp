@@ -1,6 +1,7 @@
+import shutil
 import traceback
 from websocket._app import WebSocketApp
-from workspace import AI_HUB_FOLDER_PATH, ensure_aihub_folder, get_aihub_common_property_value, get_project_config_filepath, update_aihub_common_property_value
+from workspace import AI_HUB_FOLDER_PATH, AI_HUB_SAVED_PATH, ensure_aihub_folder, get_aihub_common_property_value, update_aihub_common_property_value
 from gi.repository import Gimp, GimpUi, Gtk, GLib, Gdk # type: ignore
 from gi.repository.GdkPixbuf import Pixbuf # type: ignore
 from gi.repository.GdkPixbuf import InterpType # type: ignore
@@ -101,23 +102,21 @@ class WsRelegator:
 
 MESSAGE_LOCK = threading.Lock()
 
-def get_project_folder(project_id, project_is_real):
-	# use a temporary folder if the project is not real
-	base_folder = AI_HUB_FOLDER_PATH if project_is_real else GLib.get_tmp_dir()
-	project_folder = None
+def get_project_folder_in_timeline(timeline_path, project_is_real):
 	if not project_is_real:
-		project_folder = os.path.join(base_folder, "ai_hub_temp_project_" + project_id)
+		base_folder = GLib.get_tmp_dir()
+		project_folder = os.path.join(base_folder, "ai_hub_temp_project_" + timeline_path)
 	else:
-		project_folder = os.path.join(base_folder, "projects", project_id)
-
+		project_folder = timeline_path
+	
 	if not os.path.exists(project_folder):
 		os.makedirs(project_folder, exist_ok=True)
 
 	return project_folder
 
-def store_project_file(project_id, project_is_real, filename, file_action, bytes):
+def store_project_file(timeline_path, project_is_real, filename, file_action, bytes, separator=b""):
 	# first lets get the folder for the project files
-	project_folder = get_project_folder(project_id, project_is_real)
+	project_folder = get_project_folder_in_timeline(timeline_path, project_is_real)
 	if not os.path.exists(project_folder):
 		os.makedirs(project_folder, exist_ok=True)
 	files_folder = os.path.join(project_folder, "files")
@@ -140,6 +139,13 @@ def store_project_file(project_id, project_is_real, filename, file_action, bytes
 		with open(finalpath, "wb") as f:
 			f.write(bytes)
 		return finalpath
+	elif file_action == "JOIN":
+		# we are going to append to the file if it exists, using the separator if provided
+		# to separate the chunks
+		with open(filepath, "ab") as f:
+			if os.path.exists(filepath) and separator:
+				f.write(separator)
+			f.write(bytes)
 	else:
 		raise ValueError(f"Invalid file_action {file_action}, must be REPLACE or APPEND")
 	
@@ -155,15 +161,16 @@ def open_project_file_as_image(finalpath):
 	return None
 
 def handle_project_file(
-	project_id,
+	timeline_path,
 	project_is_real,
-	filename,
-	file_action,
 	bytes,
 	action,
 	current_image,
 ):
-	finalpath = store_project_file(project_id, project_is_real, filename, file_action, bytes)
+	file_name = action.get("file_name", "unnamed") if action else "unnamed"
+	file_action = action.get("file_action", "REPLACE") if action else "REPLACE"
+	separator = action.get("file_separator", b"") if action else b""
+	finalpath = store_project_file(timeline_path, project_is_real, file_name, file_action, bytes, separator)
 	if action is not None:
 		if action["action"] == "NEW_IMAGE" or (action["action"] == "NEW_LAYER" and current_image is None):
 			open_project_file_as_image(finalpath)
@@ -244,24 +251,27 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 				GLib.idle_add(do_set)
 
 		def setErrored(self):
-			self.errored = True
+			if threading.current_thread() is threading.main_thread():
+				self.errored = True
 
-			if hasattr(self, "image_selector") and self.image_selector is not None:
-				self.image_selector.set_sensitive(False)
-			if hasattr(self, "context_selector") and self.context_selector is not None:
-				self.context_selector.set_sensitive(False)
-			if hasattr(self, "category_selector") and self.category_selector is not None:
-				self.category_selector.set_sensitive(False)
-			if hasattr(self, "workflow_selector") and self.workflow_selector is not None:
-				self.workflow_selector.set_sensitive(False)
-			# make the run button disabled or enabled
-			if hasattr(self, "run_button") and self.run_button is not None:
-				self.run_button.set_sensitive(False)
+				if hasattr(self, "image_selector") and self.image_selector is not None:
+					self.image_selector.set_sensitive(False)
+				if hasattr(self, "context_selector") and self.context_selector is not None:
+					self.context_selector.set_sensitive(False)
+				if hasattr(self, "category_selector") and self.category_selector is not None:
+					self.category_selector.set_sensitive(False)
+				if hasattr(self, "workflow_selector") and self.workflow_selector is not None:
+					self.workflow_selector.set_sensitive(False)
+				# make the run button disabled or enabled
+				if hasattr(self, "run_button") and self.run_button is not None:
+					self.run_button.set_sensitive(False)
 
-			if hasattr(self, "workflow_elements_all") and self.workflow_elements_all is not None:
-				for element in self.workflow_elements_all:
-					if element.get_widget():
-						element.get_widget().set_sensitive(False)
+				if hasattr(self, "workflow_elements_all") and self.workflow_elements_all is not None:
+					for element in self.workflow_elements_all:
+						if element.get_widget():
+							element.get_widget().set_sensitive(False)
+			else:
+				GLib.idle_add(self.setErrored)
 
 		def on_message(self, ws, msg):
 			if self.errored:
@@ -285,10 +295,8 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 						file_data = msg
 						# write the file to a temporary location
 						handle_project_file(
-							self.project_id,
+							self.project_current_timeline_folder,
 							self.project_is_real,
-							next_file_info.get("name", "unnamed"),
-							next_file_info.get("file_action", "REPLACE"),
 							file_data,
 							next_file_info.get("action", None),
 							self.selected_image,
@@ -297,8 +305,9 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 						return
 					except Exception as e:
 						if self.is_running:
-							self.mark_as_running(False)
-						self.setStatus("Error: Failed to write received file from server " + str(e))
+							self.mark_as_running(False, "Error: Failed to write received file from server " + str(e))
+						else:
+							self.setStatus("Error: Failed to write received file from server " + str(e))
 						MESSAGE_LOCK.release()
 						return
 				elif isinstance(msg, bytes):
@@ -307,8 +316,9 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 					return
 			except Exception as e:
 				if self.is_running:
-					self.mark_as_running(False)
-				self.setStatus("Error: Failed to process received file from server " + str(e))
+					self.mark_as_running(False, "Error: Failed to process received file from server " + str(e))
+				else:
+					self.setStatus("Error: Failed to process received file from server " + str(e))
 				MESSAGE_LOCK.release()
 				return
 
@@ -342,8 +352,9 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 							self.setErrored()
 					elif message_parsed["type"] == "ERROR":
 						if self.is_running:
-							self.mark_as_running(False)
-						self.setStatus(f"Status: Error received from server \"{message_parsed.get('message', 'Unknown error')}\"")
+							self.mark_as_running(False, f"Status: Error received from server \"{message_parsed.get('message', 'Unknown error')}\"")
+						else:
+							self.setStatus(f"Status: Error received from server \"{message_parsed.get('message', 'Unknown error')}\"")
 					elif message_parsed["type"] == "STATUS":
 						self.setStatus(f"Status: {message_parsed.get('message', 'Unknown status')}")
 					elif message_parsed["type"] == "WORKFLOW_AWAIT":
@@ -358,30 +369,34 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 								handle_project_file(
 									self.project_id,
 									self.project_is_real,
-									message_parsed.get("name", "unnamed"),
-									message_parsed.get("file_action", "REPLACE"),
 									file_it_describes,
 									message_parsed.get("action", None),
 									self.selected_image,
 								)
 							except Exception as e:
 								if self.is_running:
-									self.mark_as_running(False)
-								self.setStatus("Error: Failed to write received file from server " + str(e))
+									self.mark_as_running(False, "Error: Failed to write received file from server " + str(e))
+								else:
+									self.setStatus("Error: Failed to write received file from server " + str(e))
 								MESSAGE_LOCK.release()
 								return
 						else:
 							self.next_file_info.append(message_parsed)
+					elif message_parsed["type"] == "PREPARE_BATCH":
+						if message_parsed.get("file_action", "APPEND") == "REPLACE":
+							# we need to remove all the potentially existing files in the batch
+							# TODO: implement removing existing files in the batch
+							filename = message_parsed.get("file_name", "new batch")
 					elif message_parsed["type"] == "WORKFLOW_FINISHED":
 						if self.is_running:
-							self.mark_as_running(False)
-							# because it is guaranteed that the workflow that ran is the one that finished we are
-							# just going to grab the name from the combo box
-							workflow_name = self.workflow_selector.get_active_text() if self.workflow_selector is not None else "unknown"
 							if message_parsed["error"]:
-								self.setStatus(f"Status: Workflow {workflow_name} finished with error: {message_parsed.get('error_message', 'No message provided')}")
+								self.mark_as_running(False, f"Status: Workflow finished with error: {message_parsed.get('error_message', 'No message provided')}")
 							else:
-								self.setStatus(f"Status: Workflow {workflow_name} finished successfully; ready for another run.")
+								self.mark_as_running(False, f"Status: Workflow finished successfully; ready for another run.")
+
+							if self.started_new_project_last_run:
+								self.complete_steps_after_new_empty_project(message_parsed["error"])
+
 					elif message_parsed["type"] == "WORKFLOW_STATUS":
 						if self.is_running:
 							node_name = message_parsed.get("node_name", "unknown")
@@ -400,17 +415,23 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 							self.setStatus(f"Status: Running {node_name} ({progress}/{total})")
 					else:
 						if self.is_running:
-							self.mark_as_running(False)
-						self.setStatus(f"Status: Unknown message type received: {message_parsed['type']}")
+							self.mark_as_running(False, f"Status: Unknown message type received: {message_parsed['type']}")
+						else:
+							self.setStatus(f"Status: Unknown message type received: {message_parsed['type']}")
+						
 			except Exception as e:
 				if self.is_running:
-					self.mark_as_running(False)
-				self.setStatus("Status: Received invalid message from server.")
+					self.mark_as_running(False, "Status: Received invalid message from server.")
+				else:
+					self.setStatus("Status: Received invalid message from server.")
 
 			MESSAGE_LOCK.release()
 
 		def refresh_image_list(self, recreate_list: bool):
 			if self.errored:
+				return
+			
+			if not hasattr(self, "image_selector") or self.image_selector is None:
 				return
 			
 			current_image_id = get_active_image_id(self.image_selector)
@@ -559,7 +580,7 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 			try:
 				selected_context = combo.get_active_id()
 
-				update_aihub_common_property_value("", "", "default_context", selected_context, None)
+				update_aihub_common_property_value("", "", "default_context", selected_context, self.project_saved_config_json_file)
 				
 				# remove all workflows and categories in their respective comboboxes that have been
 				# previously selected
@@ -571,9 +592,9 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 					# capitalize the first letter of each word in the category
 					self.category_selector.append(category, category.capitalize())
 
-				self.main_box.show_all()
+				#self.main_box.show_all()
 
-				default_category = get_aihub_common_property_value("", selected_context, "default_category", None)
+				default_category = get_aihub_common_property_value("", selected_context, "default_category", self.project_saved_config_json_file)
 				if default_category is None or not self.workflow_categories[selected_context].count(default_category):
 					default_category = self.workflow_categories[selected_context][0]
 
@@ -590,7 +611,7 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 				selected_context = self.context_selector.get_active_id()
 				selected_category = combo.get_active_id()
 
-				update_aihub_common_property_value("", selected_context, "default_category", selected_category, None)
+				update_aihub_common_property_value("", selected_context, "default_category", selected_category, self.project_saved_config_json_file)
 
 				# remove all workflows in their respective comboboxes that have been previously selected
 				self.workflow_selector.remove_all()
@@ -598,20 +619,86 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 				# now start by adding the workflows for that specific category that was selected
 				# the workflows have to be filtered by hand because they are a dictionary of key values and we must check
 				# by the context and the category that they match
-				first_workflow = None
 				workflows_for_category = []
+				workflows_to_add = []
 				for workflow in self.workflows.values():
 					if workflow["context"] == selected_context and workflow["category"] == selected_category:
-						self.workflow_selector.append(workflow["id"], workflow["label"])
-						workflows_for_category.append(workflow["id"])
-						if not first_workflow:
-							first_workflow = workflow["id"]
 
-				default_workflow = get_aihub_common_property_value("", selected_context + "/" + selected_category, "default_workflow", None)
+						workflow_project_type = workflow.get("project_type", None)
+						if workflow_project_type is not None and workflow_project_type.strip() == "":
+							workflow_project_type = None
+
+						mark_as_special = False
+						mark_as_project_init = False
+						current_project_type = self.project_file_contents.get("project_type", None) if self.project_file_contents is not None else None
+
+						if current_project_type is not None:
+							# if we are ourselves within a project, that has a given type, all the workflows
+							# that have a project type that matches ours, should be available first
+							# and marked as special
+							if workflow_project_type is not None and current_project_type != workflow_project_type:
+								# we are not in the same project type, so we skip this workflow
+								continue
+
+							current_timeline_info = self.project_file_contents.get("timelines", {}).get(self.project_file_contents.get("current_timeline", ""), {})
+							# if the current timeline we are in is the initial timeline we allow to recreate the timeline
+							should_show_project_init = current_timeline_info.get("initial", False)
+
+							# we are not showing project inits if we are outside of the initial timeline
+							# as it would then make no sense and break things
+							if not should_show_project_init and workflow.get("project_type_init", False):
+								continue
+
+							# if the workflow has a project type that matches ours, then we mark it as special
+							# so that we can display it first
+							if workflow_project_type is not None and current_project_type == workflow_project_type:
+								mark_as_special = True
+							# if the workflow has no project type, then it is a general workflow and we do not mark it as special
+							# but it is also available
+							else:
+								mark_as_special = False
+
+							if workflow.get("project_type_init", False):
+								# if the workflow has a project type, and this is also an init, then we mark it, so that it
+								# is clear that it will re-start the same project
+								mark_as_project_init = True
+						else:
+							# if we are not within a project, then we can only show project_type_init workflows
+							# if they have a project type
+							if workflow_project_type is not None:
+								if workflow.get("project_type_init", False):
+									mark_as_project_init = True
+								else:
+									# we are not in a project, and the workflow has a project type, but is not a project_type_init
+									# so we skip it
+									continue
+						
+						workflows_for_category.append(workflow["id"])
+						workflows_to_add.append((workflow["id"], workflow["label"], mark_as_special, mark_as_project_init))
+
+				# we want to sort workflows_to_add so that init ones are first, then special ones, then general ones
+				# and within each group, we sort alphabetically by the workflow label
+				workflows_to_add.sort(key=lambda x: (not x[3], not x[2], x[1].lower()))
+
+				first_workflow = None
+				for workflow_id, workflow_label, special, init in workflows_to_add:
+					if not first_workflow:
+						first_workflow = workflow_id
+					if init:
+						# workflows that start a new project marked with <>
+						self.workflow_selector.append(workflow_id, f"<{workflow_label}>")
+					elif special:
+						# wokflows that run actions within the current project marked with []
+						self.workflow_selector.append(workflow_id, f"[{workflow_label}]")
+					else:
+						# general workflows with no special markings that are available anywhere
+						self.workflow_selector.append(workflow_id, workflow_label)
+
+				default_workflow = get_aihub_common_property_value("", selected_context + "/" + selected_category, "default_workflow", self.project_saved_config_json_file)
 				if default_workflow is None or not workflows_for_category.count(default_workflow):
 					default_workflow = first_workflow
 
-				self.main_box.show_all()
+				#self.main_box.show_all()
 
 				# we are going to make the default selected to be the first one in our list of workflows in workflows
 				self.workflow_selector.set_active_id(default_workflow)
@@ -717,7 +804,7 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 						data["options"] = "\n".join(final_schedulers)
 						data["options_label"] = "\n".join(final_schedulers)
 
-					elif type == "AIHubExposeModel":
+					elif type == "AIHubExposeModel" or type == "AIHubExposeModelSimple":
 						# add the models to the options, models is a list and we need to get the id and name from each model
 						# and join them with a newline
 						# note that models have a context which should match the current context
@@ -753,7 +840,7 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 
 					ExposeClass = EXPOSES.get(type, None)
 
-					instance = ExposeClass(expose_id, data, selected_context, selected_workflow, workflow, None, apinfo) if ExposeClass else None
+					instance = ExposeClass(expose_id, data, selected_context, selected_workflow, workflow, self.project_current_timeline_folder, self.project_saved_config_json_file, apinfo) if ExposeClass else None
 					if instance:
 						if self.selected_image:
 							instance.current_image_changed(self.selected_image, self.image_selector.get_model())
@@ -851,6 +938,56 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 				return
 			
 			self.mark_as_running(True)
+
+			selected_workflow = self.workflow_selector.get_active_id()
+			workflow = self.workflows.get(selected_workflow)
+
+			workflow_is_init = workflow.get("project_type_init", False)
+
+			self.started_new_project_last_run = False
+			self.started_new_timeline_from_init_last_run = False
+
+			# check if the workflow is project_type_init so then we have to request the user to create a new project
+			# in that case we need to show a dialog asking the user to create a new project
+			# the dialog should be to save a file dialog with a name for the project
+			if workflow_is_init and not self.project_is_real:
+				# we are going to show a dialog asking the user to save a file
+				# the dialog should be a native file chooser dialog if possible
+				dialog = Gtk.FileChooserNative(
+					title="Select a file to save the new project at",
+					action=Gtk.FileChooserAction.SAVE,
+					transient_for=self,
+					buttons=(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, "Create Project", Gtk.ResponseType.ACCEPT)
+				)
+				dialog.set_modal(True)
+				dialog.set_keep_above(True)
+				response = dialog.run()
+				if response == Gtk.ResponseType.ACCEPT:
+					project_file = dialog.get_filename()
+					if project_file is None or project_file.strip() == "":
+						self.mark_as_running(False)
+						return
+					# remove potential extension from the file using os.path
+					project_name = os.path.splitext(project_file)[0]
+					workflow_name = workflow.get("label", "Unknown")
+					self.start_empty_project(workflow.get("project_type", "Unknown"), project_name, workflow_name)
+					self.started_new_project_last_run = True
+					dialog.destroy()
+				else:
+					# user cancelled the dialog
+					self.mark_as_running(False)
+					dialog.destroy()
+					return
+			elif workflow_is_init:
+				# we are already within a project, so we are going to create a new timeline within the current project
+				self.branch_project_timeline("Alternative timeline", is_initial=True)
+				# while this would make sense, we are commenting it out because it doesn't matter as it is used to refresh
+				# the options for the workflow, which we don't need to do here
+				# self.started_new_timeline_from_init_last_run = True
+			elif self.project_is_real:
+				workflow_name = workflow.get("label", "Unknown")
+				self.branch_project_timeline(workflow_name, is_initial=False)
+
 			try:
 				# check if all the elements are can_run returns true
 				for element in self.workflow_elements_all:
@@ -907,30 +1044,35 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 			# we are going to cancel the run of the workflow
 			self.mark_as_running(False)
 		
-		def mark_as_running(self, running: bool):
-			self.is_running = running
-			# disable all the elements in the UI if running is true, otherwise enable them
-			self.image_selector.set_sensitive(not running)
-			self.context_selector.set_sensitive(not running)
-			self.category_selector.set_sensitive(not running)
-			self.workflow_selector.set_sensitive(not running)
-			# make the run button disabled or enabled
-			self.run_button.set_sensitive(not running)
+		def mark_as_running(self, running: bool, messageOverride: str = None):
+			def do_action():
+				self.is_running = running
 
-			for element in self.workflow_elements_all:
-				if element.get_widget():
-					element.get_widget().set_sensitive(not running)
+				# disable all the elements in the UI if running is true, otherwise enable them
+				self.image_selector.set_sensitive(not running)
+				self.context_selector.set_sensitive(not running)
+				self.category_selector.set_sensitive(not running)
+				self.workflow_selector.set_sensitive(not running)
+				# make the run button disabled or enabled
+				self.run_button.set_sensitive(not running)
 
-			if running:
-				self.setStatus("Status: Running workflow...")
+				for element in self.workflow_elements_all:
+					if element.get_widget():
+						element.get_widget().set_sensitive(not running)
+
+				messageToShow = messageOverride if messageOverride is not None else ("Status: Running workflow..." if running else "Status: Ready")
+				self.setStatus(messageToShow)
+				#if not running:
+					# the reason we force this focus is because the dialog remains static while it is running
+					# and it may had been focused during that phase, so we force it to refocus once it is done
+					# so that the user can see the updated status
+					# disabled seems to cause crashes
+					#self.on_dialog_focus(None, None)
+
+			if threading.current_thread() is threading.main_thread():
+				do_action()
 			else:
-				self.setStatus("Status: Ready")
-
-			if not running:
-				# the reason we force this focus is because the dialog remains static while it is running
-				# and it may had been focused during that phase, so we force it to refocus once it is done
-				# so that the user can see the updated status
-				self.on_dialog_focus(None, None)
+				GLib.idle_add(do_action)
 
 		def on_open(self, ws):
 			self.connected = True
@@ -1008,8 +1150,20 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 			self.next_file_info = []
 			self.next_file = []
 
-			self.project_id = uuid.uuid4().hex
+			# eg the ./myproject.aihubproj
+			self.project_file = None
+			# eg. ./myproject/
+			self.project_folder = uuid.uuid4().hex
 			self.project_is_real = False
+			# eg. ./myproject/timelines/abcdef1234567890
+			self.project_current_timeline_folder = uuid.uuid4().hex
+			# eg. ./myproject/saved.json
+			self.project_saved_config_json_file = None
+			# the project info that exist within the project_file
+			self.project_file_contents = {}
+
+			self.started_new_project_last_run = False
+			self.started_new_timeline_from_init_last_run = False
 
 			GimpUi.Dialog.__init__(self, decorated=True, modal=False)
 			Gtk.Window.set_title(self, _("AI Hub Image Tools"))
@@ -1113,6 +1267,12 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 
 				self.setStatus(f"Status: Communicating at {self.apiprotocol}://{self.apihost}:{self.apiport}")
 
+				last_opened_project = get_aihub_common_property_value("", "", "last_opened_project", None)
+				if last_opened_project:
+					# the ui is not ready yet, so we pass quiet=True
+					# so it only updates the internal project information
+					self.open_project(last_opened_project, quiet=True)
+
 				threading.Thread(target=self.start_websocket, daemon=True).start()
 			except Exception as e:
 				self.setStatus(f"Error: {str(e)}")
@@ -1128,6 +1288,167 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 			Gtk.Widget.show_all(self)
 			Gtk.main()
 
+		def open_project(self, project_file_path: str, quiet: bool = False):
+			if self.errored or self.is_running:
+				return
+			if not os.path.isfile(project_file_path):
+				self.showErrorDialog("Error", "Project file " + project_file_path + " does not exist.")
+				update_aihub_common_property_value("", "", "last_opened_project", None, None)
+				return
+			
+			# remove extension to get the project folder name
+			# the project folder should contain all the subtree information
+			project_folder = os.path.splitext(os.path.basename(project_file_path))[0]
+
+			if not os.path.isdir(project_folder):
+				self.showErrorDialog("Error", "Project folder does not exist.")
+				return
+
+			try:
+				with open(project_file_path, "r") as f:
+					project_absolute_config = json.load(f)
+					if not isinstance(project_absolute_config, dict):
+						raise Exception("Invalid project file format.")
+					self.project_folder = project_folder
+					self.project_is_real = True
+					self.project_file = project_file_path
+					self.project_file_contents = project_absolute_config
+					self.project_current_timeline_folder = os.path.join(self.project_folder, "timelines", self.project_file_contents.get("current_timeline", ""))
+					if not os.path.isdir(self.project_current_timeline_folder):
+						raise Exception("Invalid project file format: current timeline folder does not exist.")
+					self.project_saved_config_json_file = os.path.join(self.project_folder, "saved.json")
+					# Ensure the saved config file exists
+					if not os.path.isfile(self.project_saved_config_json_file):
+						raise Exception("Invalid project file format: saved.json file does not exist.")
+					
+					# check that is is a valid json file
+					with open(self.project_saved_config_json_file, "r") as sf:
+						saved_config = json.load(sf)
+						if not isinstance(saved_config, dict):
+							raise Exception("Invalid saved.json file format.")
+
+					self.setStatus(f"Status: Opened project {self.project_folder}")
+					if not quiet:
+						self.on_project_opened()
+			except Exception as e:
+				self.showErrorDialog("Error", f"Failed to open project file: {str(e)}")
+				self.close_project_cleanup_data()
+
+		def close_project_cleanup_data(self):
+			if self.errored or self.is_running:
+				return
+			self.project_file = None
+			self.project_file_contents = None
+			self.project_folder = uuid.uuid4().hex
+			self.project_is_real = False
+			self.project_current_timeline_folder = uuid.uuid4().hex
+			self.project_saved_config_json_file = None
+
+		def close_project(self):
+			if self.errored or self.is_running:
+				return
+			self.close_project_cleanup_data()
+			self.setStatus("Status: Closed project")
+			self.on_project_closed()
+			
+		def start_empty_project(self, project_type: str, project_name: str, timeline_name: str):
+			if self.errored or self.is_running:
+				return
+			self.project_folder = project_name
+			self.project_is_real = True
+			self.project_file = project_name + ".aihubproj"
+			initial_timeline_id = uuid.uuid4().hex
+			self.project_file_contents = {
+				"version": 1,
+				"timelines": {
+					initial_timeline_id: {
+						"id": initial_timeline_id,
+						"name": timeline_name,
+						"parent_id": None,
+						"initial": True,
+					}
+				},
+				"current_timeline": initial_timeline_id,
+				"project_type": project_type,
+			}
+			self.project_current_timeline_folder = os.path.join(self.project_folder, "timelines", initial_timeline_id)
+			self.project_saved_config_json_file = os.path.join(self.project_folder, "saved.json")
+
+			with open(self.project_file, "w") as f:
+				json.dump(self.project_file_contents, f, indent=4)
+
+			# make the directory for the project
+			if not os.path.isdir(self.project_folder):
+				os.makedirs(self.project_folder)
+
+			# we want to copy our saved.json file to this project_saved_config_json_file
+			# if it does not exist, we create an empty one copy from AI_HUB_SAVED_PATH to project_saved_config_json_file
+			if not os.path.isfile(self.project_saved_config_json_file):
+				# if the AI_HUB_SAVED_PATH exists, we copy it
+				if os.path.isfile(AI_HUB_SAVED_PATH):
+					shutil.copyfile(AI_HUB_SAVED_PATH, self.project_saved_config_json_file)
+				else:
+					with open(self.project_saved_config_json_file, "w") as f:
+						json.dump({}, f, indent=4)
+
+			if not os.path.isdir(self.project_current_timeline_folder):
+				os.makedirs(self.project_current_timeline_folder)
+
+			self.on_project_opened()
+
+		def branch_project_timeline(self, new_timeline_name: str, is_initial: bool = False):
+			if self.errored:
+				return
+
+			current_timeline_info = self.project_file_contents.get("timelines", {}).get(self.project_file_contents.get("current_timeline", ""), {})	
+			if self.project_is_real and self.project_file_contents is not None:
+				new_timeline_id = uuid.uuid4().hex
+				self.project_file_contents["timelines"][new_timeline_id] = {
+					"id": new_timeline_id,
+					"name": new_timeline_name,
+					"parent_id": None if is_initial else current_timeline_info.get("id", None),
+					"initial": True if is_initial else False,
+				}
+				self.project_file_contents["current_timeline"] = new_timeline_id
+
+				# update the project file
+				try:
+					with open(self.project_file, "w") as f:
+						json.dump(self.project_file_contents, f, indent=4)
+				except Exception as e:
+					self.setStatus(f"Error: Failed to update project file: {str(e)}")
+					self.setErrored()
+					return
+
+				# create the new timeline folder
+				self.project_current_timeline_folder = os.path.join(self.project_folder, "timelines", new_timeline_id)
+				if not os.path.isdir(self.project_current_timeline_folder):
+					os.makedirs(self.project_current_timeline_folder)
+
+				# now such timeline inherits everything from the previous timeline
+				# so we copy the entire structure into our new timeline folder
+				previous_timeline_folder = os.path.join(self.project_folder, "timelines", self.project_file_contents["timelines"][new_timeline_id]["parent_id"])
+				if previous_timeline_folder is not None:
+					try:
+						if os.path.isdir(previous_timeline_folder):
+							shutil.copytree(previous_timeline_folder, self.project_current_timeline_folder, dirs_exist_ok=True)
+					except Exception as e:
+						self.setStatus(f"Error: Failed to copy timeline data: {str(e)}")
+						self.setErrored()
+						return
+				
+				if is_initial:
+					self.setStatus(f"Status: Created new alternate timeline '{new_timeline_name}'")
+				else:
+					self.setStatus(f"Status: Branched new timeline '{new_timeline_name}'")
+
+				if self.is_running:
+					self.started_new_timeline_from_init_last_run = current_timeline_info.get("initial", False)
+			else:
+				self.setStatus("Error: No project is currently opened.")
+				self.setErrored()
+				return
+	
 		def on_dialog_focus(self, widget, event):
 			if self.errored or self.is_running:
 				return
@@ -1135,6 +1456,38 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 			self.refresh_image_list(True)
 			for element in self.workflow_elements_all:
 				element.on_refresh()
+
+		def on_project_opened(self):
+			update_aihub_common_property_value("", "", "last_opened_project", self.project_file, None)
+
+		def on_project_closed(self):
+			# force a reset like this
+			self.on_category_selected(self.category_selector)
+
+		def complete_steps_after_new_empty_project(self, error):
+			def do_action():
+				if self.started_new_project_last_run or self.started_new_timeline_from_init_last_run:
+					self.started_new_project_last_run = False
+					self.started_new_timeline_from_init_last_run = False
+					self.on_category_selected(self.category_selector)
+
+			if threading.current_thread() is threading.main_thread():
+				do_action()
+			else:
+				GLib.idle_add(do_action)
+
+		def showErrorDialog(self, title: str, message: str):
+			dialog = Gtk.MessageDialog(
+				transient_for=self,
+				flags=0,
+				message_type=Gtk.MessageType.ERROR,
+				buttons=Gtk.ButtonsType.OK,
+				text=title,
+			)
+			dialog.format_secondary_text(message)
+			dialog.set_keep_above(True)
+			dialog.run()
+			dialog.destroy()
 
 	ImageDialog().run()
 

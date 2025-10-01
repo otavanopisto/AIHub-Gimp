@@ -7,6 +7,7 @@ PROJECT_CONFIG_JSON_FILE_NAME = "config.json"
 AI_HUB_FOLDER_NAME = "aihub"
 home_directory = os.path.expanduser("~")
 AI_HUB_FOLDER_PATH = os.path.join(home_directory, AI_HUB_FOLDER_NAME)
+AI_HUB_SAVED_PATH = os.path.join(AI_HUB_FOLDER_PATH, "saved.json")
 
 DEFAULT_CONFIG = configparser.ConfigParser()
 DEFAULT_CONFIG["api"] = {
@@ -18,11 +19,6 @@ DEFAULT_CONFIG["api"] = {
 
 def get_config_filepath():
 	config_path = os.path.join(AI_HUB_FOLDER_PATH, CONFIG_FILE_NAME)
-
-	return config_path
-
-def get_project_config_filepath(projectname: str):
-	config_path = os.path.join(AI_HUB_FOLDER_PATH, projectname, PROJECT_CONFIG_JSON_FILE_NAME)
 
 	return config_path
 
@@ -98,7 +94,7 @@ def ensure_aihub_folder():
 		
 	return ensure_and_retrieve_aihub_config()
 
-def update_aihub_common_property_value(workflow_context: str, workflow_id: str, property_id: str | list, value, project: str):
+def update_aihub_common_property_value(workflow_context: str, workflow_id: str, property_id: str | list, value, saved_filepath: str):
 	"""
 	Each property that is retreived from an AIHub workflow for a given id has a value,
 	this key is used to identify the property in the workflow, this function will
@@ -107,13 +103,11 @@ def update_aihub_common_property_value(workflow_context: str, workflow_id: str, 
 	"""
 
 	folder_to_save = os.path.join(AI_HUB_FOLDER_PATH)
-	if project is not None and project != "":
-		folder_to_save = os.path.join(AI_HUB_FOLDER_PATH, "projects", project)
 
 	if not os.path.exists(folder_to_save):
 		os.makedirs(folder_to_save)
 
-	file_to_save = os.path.join(folder_to_save, "saved.json")
+	file_to_save = saved_filepath or os.path.join(folder_to_save, "saved.json")
 
 	# Load existing saved properties
 	saved_properties = {}
@@ -161,18 +155,16 @@ def update_aihub_common_property_value(workflow_context: str, workflow_id: str, 
 	with open(file_to_save, "w") as f:
 		json.dump(saved_properties, f, indent=4)
 
-def get_aihub_common_property_value(workflow_context: str, workflow_id: str, property_id: str | list, project: str):
+def get_aihub_common_property_value(workflow_context: str, workflow_id: str, property_id: str | list, saved_filepath: str):
 	"""
 	Retrieves the value of a common property for a given workflow type and property ID.
 	"""
 	folder_to_read = os.path.join(AI_HUB_FOLDER_PATH)
-	if project is not None and project != "":
-		folder_to_read = os.path.join(AI_HUB_FOLDER_PATH, "projects", project)
 
 	if not os.path.exists(folder_to_read):
 		os.makedirs(folder_to_read)
 
-	file_to_read = os.path.join(folder_to_read, "saved.json")
+	file_to_read = saved_filepath or os.path.join(folder_to_read, "saved.json")
 
 	if os.path.exists(file_to_read):
 		with open(file_to_read, "r") as f:

@@ -1,7 +1,7 @@
 import struct
 import urllib
 from label import AIHubLabel
-from workspace import get_aihub_common_property_value, get_project_config_filepath, update_aihub_common_property_value
+from workspace import get_aihub_common_property_value, update_aihub_common_property_value
 from gi.repository import Gimp, Gtk, GLib, Gio, Gdk # type: ignore
 from gi.repository.GdkPixbuf import Pixbuf # type: ignore
 from gi.repository.GdkPixbuf import InterpType # type: ignore
@@ -12,12 +12,13 @@ import json
 import os
 
 class AIHubExposeBase:
-	def __init__(self, id, data, workflow_context, workflow_id, workflow, projectname, apinfo):
+	def __init__(self, id, data, workflow_context, workflow_id, workflow, project_current_timeline_path, project_saved_path, apinfo):
 		self.data = None
 		self.id = None
 		self.initial_value = None
 		self.workflow = None
-		self.projectname = None
+		self.project_current_timeline_path = None
+		self.project_saved_path = None
 		self.workflow_context = None
 		self.workflow_id = None
 		self._on_change_timeout_id = None
@@ -32,9 +33,10 @@ class AIHubExposeBase:
 		self.id = id
 		self.workflow_context = workflow_context
 		self.workflow_id = workflow_id
-		self.initial_value = get_aihub_common_property_value(workflow_context, workflow_id, self.id, projectname)
+		self.initial_value = get_aihub_common_property_value(workflow_context, workflow_id, self.id, project_saved_path)
 		self.workflow = workflow
-		self.projectname = projectname
+		self.project_current_timeline_path = project_current_timeline_path
+		self.project_saved_path = project_saved_path
 
 		if (self.initial_value is None):
 			self.set_initial_value()
@@ -43,16 +45,16 @@ class AIHubExposeBase:
 		if ("value" in self.data and self.data["value"] is not None):
 			self.initial_value = self.data["value"]
 
-	def read_config_json(self, key):
+	def read_project_config_json(self, key):
 		if not self.projectname or self.projectname == "":
 			return None
 		
-		config_path = get_project_config_filepath(self.projectname)
+		timeline_config_path = os.path.join(self.project_current_timeline_path, "config.json")
 
-		if not os.path.exists(config_path):
+		if not os.path.exists(timeline_config_path):
 			return None
 
-		with open(config_path, "r") as f:
+		with open(timeline_config_path, "r") as f:
 			config = json.load(f)
 			# the key is dot separated and should go in a loop
 			for part in key.split("."):
@@ -107,7 +109,7 @@ class AIHubExposeBase:
 			self.label.set_text(new_label)
 
 	def _on_change_timeout(self, value):
-		update_aihub_common_property_value(self.workflow_context, self.workflow_id, self.id, value, self.projectname)
+		update_aihub_common_property_value(self.workflow_context, self.workflow_id, self.id, value, self.project_saved_path)
 		GLib.source_remove(self._on_change_timeout_id)
 		self._on_change_timeout_id = None
 
@@ -159,8 +161,8 @@ class AIHubExposeImage(AIHubExposeBase):
 	def get_special_priority(self):
 		return 100
 	
-	def __init__(self, id, data, workflow_context, workflow_id, workflow, projectname, apinfo):
-		super().__init__(id, data, workflow_context, workflow_id, workflow, projectname, apinfo)
+	def __init__(self, id, data, workflow_context, workflow_id, workflow, project_current_timeline_path, project_saved_path, apinfo):
+		super().__init__(id, data, workflow_context, workflow_id, workflow, project_current_timeline_path, project_saved_path, apinfo)
 
 		self.label: Gtk.Label = None
 		self.error_label: AIHubLabel = None
@@ -292,7 +294,7 @@ class AIHubExposeImage(AIHubExposeBase):
 			if self.selected_image is not None and self.selected_layer is None:
 				# save the image to a temporary file
 				id_of_image = self.selected_image.get_id()
-				file_to_upload = os.path.join(GLib.get_tmp_dir(), f"aihub_temp_image_{id_of_image}.png")
+				file_to_upload = os.path.join(GLib.get_tmp_dir(), f"aihub_temp_image_{id_of_image}.webp")
 				# create a new gfile to save the image
 				gfile = Gio.File.new_for_path(file_to_upload)
 				Gimp.file_save(Gimp.RunMode.NONINTERACTIVE, self.selected_image, gfile, None)
@@ -300,7 +302,8 @@ class AIHubExposeImage(AIHubExposeBase):
 			elif self.selected_image is not None and self.selected_layer is not None and load_type == "current_layer":
 				# save the layer to a temporary file
 				id_of_image = self.selected_image.get_id()
-				file_to_upload = os.path.join(GLib.get_tmp_dir(), f"aihub_temp_layer_{id_of_image}_{self.selected_layer.get_id()}.png")
+				# make a file to print the time for debugging
+				file_to_upload = os.path.join(GLib.get_tmp_dir(), f"aihub_temp_layer_{id_of_image}_{self.selected_layer.get_id()}.webp")
 				# create a new gfile to save the image
 				gfile = Gio.File.new_for_path(file_to_upload)
 
@@ -312,8 +315,12 @@ class AIHubExposeImage(AIHubExposeBase):
 				new_layer = Gimp.Layer.new_from_drawable(layer_to_work_on, new_image)
 				new_image.insert_layer(new_layer, None, 0)
 				new_layer.set_offsets(0,0)
+				new_layer.set_opacity(100.0)
+				new_layer.set_visible(True)
+				Gimp.displays_flush()
 				try:
 					Gimp.file_save(Gimp.RunMode.NONINTERACTIVE, new_image, gfile, None)
+					Gimp.displays_flush()
 				except Exception as e:
 					raise e
 				finally:
@@ -321,7 +328,7 @@ class AIHubExposeImage(AIHubExposeBase):
 			elif self.selected_image is not None and self.selected_layer is not None and load_type == "merged_image_without_current_layer":
 				# save the layer to a temporary file
 				id_of_image = self.selected_image.get_id()
-				file_to_upload = os.path.join(GLib.get_tmp_dir(), f"aihub_temp_layer_{id_of_image}_no_{self.selected_layer.get_id()}.png")
+				file_to_upload = os.path.join(GLib.get_tmp_dir(), f"aihub_temp_layer_{id_of_image}_no_{self.selected_layer.get_id()}.webp")
 				# create a new gfile to save the image
 				gfile = Gio.File.new_for_path(file_to_upload)
 
@@ -351,9 +358,7 @@ class AIHubExposeImage(AIHubExposeBase):
 			data = f.read()  # read whole thing
 			file_data = data
 
-			if not data.startswith(b'\x89PNG\r\n\x1a\n'):
-				hash_md5.update(data)
-			else:
+			if data.startswith(b'\x89PNG\r\n\x1a\n'):
 				pos = 8
 				while pos < len(data):
 					if pos + 8 > len(data):
@@ -365,6 +370,9 @@ class AIHubExposeImage(AIHubExposeBase):
 						hash_md5.update(chunk_type)
 						hash_md5.update(chunk_data)
 					pos += 8 + length + 4
+			else:
+				hash_md5.update(data)
+				
 		upload_file_hash = hash_md5.hexdigest()
 
 		# now we can upload the file, using that hash as filename, if the file does not exist
@@ -721,8 +729,8 @@ class AIHubExposeImage(AIHubExposeBase):
 			return self.selected_image is not None
 
 class AIHubExposeImageInfoOnly(AIHubExposeImage):
-	def __init__(self, id, data, workflow_context, workflow_id, workflow, projectname, apinfo):
-		super().__init__(id, data, workflow_context, workflow_id, workflow, projectname, apinfo)
+	def __init__(self, id, data, workflow_context, workflow_id, workflow, project_current_timeline_path, project_saved_path, apinfo):
+		super().__init__(id, data, workflow_context, workflow_id, workflow, project_current_timeline_path, project_saved_path, apinfo)
 
 		self.info_only_mode = True
 
@@ -743,8 +751,8 @@ class AIHubExposeImageBatch(AIHubExposeBase):
 
 		return vbox
 
-	def __init__(self, id, data, workflow_context, workflow_id, workflow, projectname, apinfo):
-		super().__init__(id, data, workflow_context, workflow_id, workflow, projectname, apinfo)
+	def __init__(self, id, data, workflow_context, workflow_id, workflow, project_current_timeline_path, project_saved_path, apinfo):
+		super().__init__(id, data, workflow_context, workflow_id, workflow, project_current_timeline_path, project_saved_path, apinfo)
 
 		self.label: Gtk.Label = None
 		self.box: Gtk.Box = None
@@ -817,8 +825,8 @@ class AIHubExposeImageBatch(AIHubExposeBase):
 		return self.data["maxlen"] >= len(self.list_of_exposes) >= self.data["minlen"] and all([expose.can_run() for expose in self.list_of_exposes])
 
 class AIHubExposeInteger(AIHubExposeBase):
-	def __init__(self, id, data, workflow_context, workflow_id, workflow, projectname, apinfo):
-		super().__init__(id, data, workflow_context, workflow_id, workflow, projectname, apinfo)
+	def __init__(self, id, data, workflow_context, workflow_id, workflow, project_current_timeline_path, project_saved_path, apinfo):
+		super().__init__(id, data, workflow_context, workflow_id, workflow, project_current_timeline_path, project_saved_path, apinfo)
 
 		self.label: Gtk.Label = None
 		self.error_label: AIHubLabel = None
@@ -889,8 +897,8 @@ class AIHubExposeInteger(AIHubExposeBase):
 		return (min is None or value >= min) and (max is None or value <= max)
 
 class AIHubExposeSeed(AIHubExposeBase):
-	def __init__(self, id, data, workflow_context, workflow_id, workflow, projectname, apinfo):
-		super().__init__(id, data, workflow_context, workflow_id, workflow, projectname, apinfo)
+	def __init__(self, id, data, workflow_context, workflow_id, workflow, project_current_timeline_path, project_saved_path, apinfo):
+		super().__init__(id, data, workflow_context, workflow_id, workflow, project_current_timeline_path, project_saved_path, apinfo)
 
 		self.label: Gtk.Label = None
 		self.error_label: AIHubLabel = None
@@ -1005,8 +1013,8 @@ class AIHubExposeSeed(AIHubExposeBase):
 		self.check_validity(self.get_value_internal())
 
 class AIHubExposeFloat(AIHubExposeBase):
-	def __init__(self, id, data, workflow_context, workflow_id, workflow, projectname, apinfo):
-		super().__init__(id, data, workflow_context, workflow_id, workflow, projectname, apinfo)
+	def __init__(self, id, data, workflow_context, workflow_id, workflow, project_current_timeline_path, project_saved_path, apinfo):
+		super().__init__(id, data, workflow_context, workflow_id, workflow, project_current_timeline_path, project_saved_path, apinfo)
 
 		self.label: Gtk.Label = None
 		self.widget: Gtk.SpinButton = None
@@ -1107,8 +1115,8 @@ class AIHubExposeSteps(AIHubExposeInteger):
 			self.check_validity(self.get_value())
 
 class AIHubExposeBoolean(AIHubExposeBase):
-	def __init__(self, id, data, workflow_context, workflow_id, workflow, projectname, apinfo):
-		super().__init__(id, data, workflow_context, workflow_id, workflow, projectname, apinfo)
+	def __init__(self, id, data, workflow_context, workflow_id, workflow, project_current_timeline_path, project_saved_path, apinfo):
+		super().__init__(id, data, workflow_context, workflow_id, workflow, project_current_timeline_path, project_saved_path, apinfo)
 
 		self.label: Gtk.Label = None
 		self.error_label: AIHubLabel = None
@@ -1163,8 +1171,8 @@ class AIHubExposeString(AIHubExposeBase):
 			return 50
 		return 0
 	
-	def __init__(self, id, data, workflow_context, workflow_id, workflow, projectname, apinfo):
-		super().__init__(id, data, workflow_context, workflow_id, workflow, projectname, apinfo)
+	def __init__(self, id, data, workflow_context, workflow_id, workflow, project_current_timeline_path, project_saved_path, apinfo):
+		super().__init__(id, data, workflow_context, workflow_id, workflow, project_current_timeline_path, project_saved_path, apinfo)
 
 		self.label: Gtk.Label = None
 		self.error_label: AIHubLabel = None
@@ -1243,8 +1251,8 @@ class AIHubExposeString(AIHubExposeBase):
 		return len(self.get_value()) <= self.data["maxlen"] and len(self.get_value()) >= self.data["minlen"]
 
 class AIHubExposeStringSelection(AIHubExposeBase):
-	def __init__(self, id, data, workflow_context, workflow_id, workflow, projectname, apinfo):
-		super().__init__(id, data, workflow_context, workflow_id, workflow, projectname, apinfo)
+	def __init__(self, id, data, workflow_context, workflow_id, workflow, project_current_timeline_path, project_saved_path, apinfo):
+		super().__init__(id, data, workflow_context, workflow_id, workflow, project_current_timeline_path, project_saved_path, apinfo)
 
 		self.label: Gtk.Label = None
 		self.error_label: AIHubLabel = None
@@ -1353,7 +1361,7 @@ class AIHubExposeSampler(AIHubExposeStringSelection):
 
 class AIHubExposeProjectConfigBase(AIHubExposeBase):
 	def get_value(self):
-		value = self.read_config_json(self.data["field"])
+		value = self.read_project_config_json(self.data["field"])
 		if value is None:
 			value = self.data["default"]
 		return value
@@ -1387,8 +1395,8 @@ class AIHubExposeProjectConfigFloat(AIHubExposeProjectConfigBase):
 		return parent_value
 	
 class AIHubExposeLora(AIHubExposeBase):
-	def __init__(self, id, data, workflow_context, workflow_id, workflow, projectname, apinfo):
-		super().__init__(id, data, workflow_context, workflow_id, workflow, projectname, apinfo)
+	def __init__(self, id, data, workflow_context, workflow_id, workflow, project_current_timeline_path, project_saved_path, apinfo):
+		super().__init__(id, data, workflow_context, workflow_id, workflow, project_current_timeline_path, project_saved_path, apinfo)
 
 		self.box: Gtk.Box = None
 		self.image: Gtk.Image = None
@@ -1545,8 +1553,8 @@ class AIHubExposeLora(AIHubExposeBase):
 class AIHubExposeModel(AIHubExposeBase):
 	def get_special_priority(self):
 		return 1000
-	def __init__(self, id, data, workflow_context, workflow_id, workflow, projectname, apinfo):
-		super().__init__(id, data, workflow_context, workflow_id, workflow, projectname, apinfo)
+	def __init__(self, id, data, workflow_context, workflow_id, workflow, project_current_timeline_path, project_saved_path, apinfo):
+		super().__init__(id, data, workflow_context, workflow_id, workflow, project_current_timeline_path, project_saved_path, apinfo)
 
 		self.label: Gtk.Label = None
 		self.error_label: AIHubLabel = None
@@ -1585,7 +1593,7 @@ class AIHubExposeModel(AIHubExposeBase):
 		if self.initial_value is not None and self.initial_value["_id"] in self.options and self.data.get("disable_model_selection", False):
 			self.widget.set_active_id(self.initial_value["_id"])
 			self.model = next((m for m in data["filtered_models"] if m["id"] == self.initial_value["_id"]), None)
-		elif data["model"] is not None and data["model"] in self.options:
+		elif "model" in data and data["model"] is not None and data["model"] in self.options:
 			self.widget.set_active_id(data["model"])
 			self.model = next((m for m in data["filtered_models"] if m["id"] == data["model"]), None)
 		else:
@@ -1705,7 +1713,7 @@ class AIHubExposeModel(AIHubExposeBase):
 			if lora["id"] not in self.lorasobjects:
 				newinstance = AIHubExposeLora([self.id, "_loras", lora["id"]], {
 					"lora": lora,
-				}, self.workflow_context, self.workflow_id, self.workflow, self.projectname, self.apinfo)
+				}, self.workflow_context, self.workflow_id, self.workflow, self.project_current_timeline_path, self.project_saved_path, self.apinfo)
 				self.lorasobjects[lora["id"]] = newinstance
 				newinstance.hook_on_change_fn_hijack(self.on_lora_changed)
 				
@@ -1909,4 +1917,7 @@ EXPOSES = {
 	"AIHubExposeScheduler": AIHubExposeScheduler,
 	"AIHubExposeExtendableScheduler": AIHubExposeExtendableScheduler,
 	"AIHubExposeModel": AIHubExposeModel,
+	# the simple uses the same as the standard on the display, since it only differs on how
+	# it is configured in the backend
+	"AIHubExposeModelSimple": AIHubExposeModel,
 }

@@ -1,5 +1,4 @@
 import shutil
-import traceback
 from websocket._app import WebSocketApp
 from workspace import AI_HUB_FOLDER_PATH, AI_HUB_SAVED_PATH, ensure_aihub_folder, get_aihub_common_property_value, update_aihub_common_property_value
 from gi.repository import Gimp, GimpUi, Gtk, GLib, Gdk # type: ignore
@@ -9,6 +8,7 @@ from gi.repository import Gio # type: ignore
 import threading
 from gtkexposes import EXPOSES
 import uuid
+from project import ProjectDialog
 
 import json
 import os
@@ -173,7 +173,9 @@ def handle_project_file(
 	finalpath = store_project_file(timeline_path, project_is_real, file_name, file_action, bytes, separator)
 	if action is not None:
 		if action["action"] == "NEW_IMAGE" or (action["action"] == "NEW_LAYER" and current_image is None):
-			open_project_file_as_image(finalpath)
+			# when real projects we do not open the image automatically
+			if not project_is_real:
+				open_project_file_as_image(finalpath)
 		elif action["action"] == "NEW_LAYER":
 			pos_x = action.get("pos_x", 0)
 			pos_y = action.get("pos_y", 0)
@@ -360,14 +362,16 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 					elif message_parsed["type"] == "WORKFLOW_AWAIT":
 						# waiting for the workflow with id, there are "before_this" users before you
 						self.setStatus(f"Status: Waiting for workflow {message_parsed.get('workflow_id', 'unknown')} to start, there are {message_parsed.get('before_this', 0)} users before you.")
+						self.current_run_id = message_parsed.get('id', None)
 					elif message_parsed["type"] == "WORKFLOW_START":
 						self.setStatus(f"Status: Workflow {message_parsed.get('workflow_id', 'unknown')} has started.")
+						self.current_run_id = message_parsed.get('id', None)
 					elif message_parsed["type"] == "FILE":
 						if len(self.next_file) > 0:
 							file_it_describes = self.next_file.pop(0)
 							try:
 								handle_project_file(
-									self.project_id,
+									self.project_current_timeline_folder,
 									self.project_is_real,
 									file_it_describes,
 									message_parsed.get("action", None),
@@ -388,6 +392,7 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 							# TODO: implement removing existing files in the batch
 							filename = message_parsed.get("file_name", "new batch")
 					elif message_parsed["type"] == "WORKFLOW_FINISHED":
+						self.current_run_id = None
 						if self.is_running:
 							if message_parsed["error"]:
 								self.mark_as_running(False, f"Status: Workflow finished with error: {message_parsed.get('error_message', 'No message provided')}")
@@ -413,6 +418,37 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 									total = int(total)
 
 							self.setStatus(f"Status: Running {node_name} ({progress}/{total})")
+					elif message_parsed["type"] == "SET_CONFIG_VALUE":
+						field = message_parsed.get("field", None)
+						value = message_parsed.get("value", None)
+						if field is not None and self.project_is_real:
+							timeline_config_path = os.path.join(self.project_current_timeline_folder, "config.json")
+
+							current_config = {}
+							if os.path.exists(timeline_config_path):
+								with open(timeline_config_path, "r") as f:
+									try:
+										current_config = json.load(f)
+									except json.JSONDecodeError:
+										current_config = {}
+							
+							current_config_working_with = current_config
+							splitted = field.split(".")
+							for i in range(0, len(splitted)):
+								if i == len(splitted) - 1:
+									current_config_working_with[splitted[i]] = value
+									break
+
+								part = splitted[i]
+								next_config = current_config_working_with.get(part, None)
+								if next_config is None:
+									current_config_working_with[part] = {}
+									current_config_working_with = current_config_working_with[part]
+								else:
+									current_config_working_with = next_config
+
+							with open(timeline_config_path, "w") as f:
+								json.dump(current_config, f, indent=4)
 					else:
 						if self.is_running:
 							self.mark_as_running(False, f"Status: Unknown message type received: {message_parsed['type']}")
@@ -573,8 +609,30 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 			self.workflow_selector.connect("changed", self.on_workflow_selected)
 			# trigger it by hand because we want to set the initial status
 			self.main_box.show_all()
+			self.setup_project_ui()
 
 			self.on_context_selected(self.context_selector)
+
+		def setup_project_ui(self):
+			if self.errored:
+				return
+			
+			if not self.project_is_real:
+				# change the name of the window to the default one
+				self.set_title(_("AIHub Tools"))
+
+				if hasattr(self, "project_dialog") and self.project_dialog is not None:
+					self.project_dialog.close()
+					self.project_dialog = None
+			else:
+				project_name = self.project_file_contents.get("project_name", "Unnamed Project")
+				self.set_title(_("AIHub Tools - Project: ") + project_name)
+
+				if not hasattr(self, "project_dialog") or self.project_dialog is None:
+					self.project_dialog = ProjectDialog(project_name, self, self.project_file_contents, self.project_current_timeline_folder)
+					self.project_dialog.show_all()
+					self.project_dialog.on_close(self.close_project)
+					self.project_dialog.on_change_timeline(self.on_change_project_timeline)
 
 		def on_context_selected(self, combo):
 			try:
@@ -727,6 +785,7 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 					# bug in GTK where the changed signal is called even if there are no items
 					# in the combobox, so we just ignore it
 					self.run_button.hide()
+					self.cancel_run_button.hide()
 					return
 
 				if not workflow or workflow is None or not workflow.get("description", None):
@@ -908,9 +967,11 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 					self.main_box.show_all()
 					advanced_options_box.hide()
 					self.run_button.show()
+					self.cancel_run_button.show()
 				else:
 					self.main_box.show_all()
 					self.run_button.show()
+					self.cancel_run_button.show()
 
 				# add a horizontal separator
 				separator = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
@@ -932,7 +993,7 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 			else:
 				advanced_options_box.show()
 				button.set_label("Hide Advanced Options")
-
+			
 		def on_run_workflow(self, button):
 			if self.errored:
 				return
@@ -957,10 +1018,12 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 					title="Select a file to save the new project at",
 					action=Gtk.FileChooserAction.SAVE,
 					transient_for=self,
-					buttons=(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, "Create Project", Gtk.ResponseType.ACCEPT)
+					accept_label="Create Project",
+					cancel_label="Cancel",
+					#buttons=(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, "Create Project", Gtk.ResponseType.ACCEPT)
 				)
 				dialog.set_modal(True)
-				dialog.set_keep_above(True)
+				#dialog.set_keep_above(True)
 				response = dialog.run()
 				if response == Gtk.ResponseType.ACCEPT:
 					project_file = dialog.get_filename()
@@ -968,9 +1031,9 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 						self.mark_as_running(False)
 						return
 					# remove potential extension from the file using os.path
-					project_name = os.path.splitext(project_file)[0]
+					project_path = os.path.splitext(project_file)[0]
 					workflow_name = workflow.get("label", "Unknown")
-					self.start_empty_project(workflow.get("project_type", "Unknown"), project_name, workflow_name)
+					self.start_empty_project(workflow.get("project_type", "Unknown"), project_path, workflow_name)
 					self.started_new_project_last_run = True
 					dialog.destroy()
 				else:
@@ -1028,8 +1091,6 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 				}
 
 				self.websocket.send(json.dumps(workflow_operation))
-
-
 			except Exception as e:
 				self.setStatus(f"Error: {str(e)}")
 				self.setErrored()
@@ -1037,12 +1098,32 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 
 			return
 		
-		def on_cancel_run_workflow(self):
+		def on_cancel_run_workflow(self, button=None):
 			if self.errored:
 				return
 			
-			# we are going to cancel the run of the workflow
-			self.mark_as_running(False)
+			# literally not running or we haven't received a run id
+			# either this is going slow or something odd is happening
+			# either way without this id we can't really cancel anything
+			running_id = self.current_run_id
+			if running_id is None:
+				return
+			
+			self.cancel_run_button.set_sensitive(False)
+			#change the label of the cancel button to cancelling
+			self.cancel_run_button.set_label("Cancelling...")
+
+			cancel_operation = {
+				"type": "WORKFLOW_OPERATION",
+				"cancel": running_id
+			}
+
+			try:
+				self.websocket.send(json.dumps(cancel_operation))
+			except Exception as e:
+				self.setStatus(f"Error: {str(e)}")
+				self.setErrored()
+				return
 		
 		def mark_as_running(self, running: bool, messageOverride: str = None):
 			def do_action():
@@ -1055,6 +1136,8 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 				self.workflow_selector.set_sensitive(not running)
 				# make the run button disabled or enabled
 				self.run_button.set_sensitive(not running)
+				self.cancel_run_button.set_sensitive(running)
+				self.cancel_run_button.set_label("Cancel Run")
 
 				for element in self.workflow_elements_all:
 					if element.get_widget():
@@ -1068,6 +1151,9 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 					# so that the user can see the updated status
 					# disabled seems to cause crashes
 					#self.on_dialog_focus(None, None)
+
+				if hasattr(self, "project_dialog") and self.project_dialog is not None and self.project_is_real and not running:
+					self.project_dialog.refresh(self.project_file_contents, self.project_current_timeline_folder)
 
 			if threading.current_thread() is threading.main_thread():
 				do_action()
@@ -1118,6 +1204,8 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 			self.websocket_relegator: WsRelegator = None
 			self.errored: bool = False
 
+			self.current_run_id: str = None
+
 			self.workflows = {}
 			self.workflow_contexts = []
 			self.workflow_categories = []
@@ -1166,7 +1254,7 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 			self.started_new_timeline_from_init_last_run = False
 
 			GimpUi.Dialog.__init__(self, decorated=True, modal=False)
-			Gtk.Window.set_title(self, _("AI Hub Image Tools"))
+			Gtk.Window.set_title(self, _("AIHub Tools"))
 			Gtk.Window.set_role(self, PROC_NAME)
 			Gtk.Window.set_resizable(self, False)
 
@@ -1184,7 +1272,7 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 
 			# Make the dialog dockable and persistent.
 			# This is how you make it behave like GIMP's native dialogs.
-			self.set_role("ai-hub-image-procedure") # A unique role string
+			self.set_role("ai-hub-tools") # A unique role string
 
 			# Create a vertical box to hold widgets
 			self.main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
@@ -1244,18 +1332,32 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 			scrolled_window.add(self.main_box)
 			contents_area.pack_start(scrolled_window, True, True, 0)
 
+			button_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+			button_box.set_hexpand(True)
+			button_box.set_halign(Gtk.Align.END)
+
 			self.run_button = Gtk.Button(label="Run Workflow")
+			self.cancel_run_button = Gtk.Button(label="Cancel Run")
+			self.cancel_run_button.connect("clicked", self.on_cancel_run_workflow)
 			self.run_button.connect("clicked", self.on_run_workflow)
 			#align the run button to the right
 			self.run_button.set_halign(Gtk.Align.END)
 			self.run_button.set_hexpand(False)
+			self.cancel_run_button.set_halign(Gtk.Align.START)
+			self.cancel_run_button.set_hexpand(False)
 			#add margin top to the button
 			self.run_button.set_margin_top(12)
+			self.cancel_run_button.set_margin_top(12)
+			self.cancel_run_button.set_sensitive(False)
 
 			#self.workflow_elements.pack_start(self.run_button, False, False, 0)
 
 			self.run_button.set_tooltip_text("Run the selected workflow with the selected options")
-			contents_area.pack_start(self.run_button, False, False, 0)
+			self.cancel_run_button.set_tooltip_text("Cancel the running workflow")
+			button_box.pack_start(self.cancel_run_button, False, False, 0)
+			button_box.pack_start(self.run_button, False, False, 0)
+
+			contents_area.pack_start(button_box, False, False, 0)
 
 			try:
 				config = ensure_aihub_folder()
@@ -1298,10 +1400,10 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 			
 			# remove extension to get the project folder name
 			# the project folder should contain all the subtree information
-			project_folder = os.path.splitext(os.path.basename(project_file_path))[0]
+			project_folder = os.path.splitext(project_file_path)[0] + "_files"
 
 			if not os.path.isdir(project_folder):
-				self.showErrorDialog("Error", "Project folder does not exist.")
+				self.showErrorDialog("Error", "Project folder " + project_folder + " does not exist.")
 				return
 
 			try:
@@ -1335,7 +1437,7 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 				self.close_project_cleanup_data()
 
 		def close_project_cleanup_data(self):
-			if self.errored or self.is_running:
+			if self.errored:
 				return
 			self.project_file = None
 			self.project_file_contents = None
@@ -1345,19 +1447,46 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 			self.project_saved_config_json_file = None
 
 		def close_project(self):
-			if self.errored or self.is_running:
+			if self.errored:
 				return
+			if self.is_running:
+				self.on_cancel_run_workflow()
 			self.close_project_cleanup_data()
 			self.setStatus("Status: Closed project")
 			self.on_project_closed()
-			
-		def start_empty_project(self, project_type: str, project_name: str, timeline_name: str):
-			if self.errored or self.is_running:
+
+		def on_change_project_timeline(self, new_timeline_id: str):
+			if self.errored:
 				return
-			self.project_folder = project_name
+			
+			if not self.project_is_real or self.project_file_contents is None:
+				self.setStatus("Error: No project is currently opened.")
+				return
+
+			self.project_file_contents.current_timeline = new_timeline_id
+			self.project_current_timeline_folder = os.path.join(self.project_folder, "timelines", new_timeline_id)
+
+			with open(self.project_file, "w") as f:
+				json.dump(self.project_file_contents, f, indent=4)
+
+			if not os.path.isdir(self.project_current_timeline_folder):
+				os.makedirs(self.project_current_timeline_folder)
+
+			if hasattr(self, "project_dialog") and self.project_dialog is not None:
+				if threading.current_thread() is threading.main_thread():
+					self.project_dialog.refresh(self.project_file_contents, self.project_current_timeline_folder)
+				else:
+					GLib.idle_add(self.project_dialog.refresh, self.project_file_contents, self.project_current_timeline_folder)
+
+		def start_empty_project(self, project_type: str, project_path: str, timeline_name: str):
+			if self.errored:
+				return
+			
+			self.project_folder = project_path + "_files"
 			self.project_is_real = True
-			self.project_file = project_name + ".aihubproj"
+			self.project_file = project_path + ".aihubproj"
 			initial_timeline_id = uuid.uuid4().hex
+			project_name = os.path.basename(project_path)
 			self.project_file_contents = {
 				"version": 1,
 				"timelines": {
@@ -1370,6 +1499,7 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 				},
 				"current_timeline": initial_timeline_id,
 				"project_type": project_type,
+				"project_name": project_name,
 			}
 			self.project_current_timeline_folder = os.path.join(self.project_folder, "timelines", initial_timeline_id)
 			self.project_saved_config_json_file = os.path.join(self.project_folder, "saved.json")
@@ -1459,10 +1589,19 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 
 		def on_project_opened(self):
 			update_aihub_common_property_value("", "", "last_opened_project", self.project_file, None)
+			if (threading.current_thread() is threading.main_thread()):
+				self.setup_project_ui()
+			else:
+				GLib.idle_add(self.setup_project_ui)
 
 		def on_project_closed(self):
 			# force a reset like this
 			self.on_category_selected(self.category_selector)
+			update_aihub_common_property_value("", "", "last_opened_project", None, None)
+			if (threading.current_thread() is threading.main_thread()):
+				self.setup_project_ui()
+			else:
+				GLib.idle_add(self.setup_project_ui)
 
 		def complete_steps_after_new_empty_project(self, error):
 			def do_action():

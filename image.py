@@ -629,7 +629,15 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 				self.set_title(_("AIHub Tools - Project: ") + project_name)
 
 				if not hasattr(self, "project_dialog") or self.project_dialog is None:
-					self.project_dialog = ProjectDialog(project_name, self, self.project_file_contents, self.project_current_timeline_folder)
+					self.project_dialog = ProjectDialog(
+						project_name,
+						self,
+						self.project_file_contents,
+						self.project_current_timeline_folder,
+						self.project_folder,
+						self.image_model,
+						self.on_dialog_focus,
+					)
 					self.project_dialog.show_all()
 					self.project_dialog.on_close(self.close_project)
 					self.project_dialog.on_change_timeline(self.on_change_project_timeline)
@@ -1274,6 +1282,23 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 			# This is how you make it behave like GIMP's native dialogs.
 			self.set_role("ai-hub-tools") # A unique role string
 
+			# make a top bar with a File menu
+			header_bar = Gtk.HeaderBar()
+			header_bar.set_title("AIHub Tools")
+			header_bar.set_show_close_button(True)
+			Gtk.Window.set_titlebar(self, header_bar)
+			menu_button = Gtk.MenuButton()
+			menu_image = Gtk.Image.new_from_icon_name("open-menu-symbolic", Gtk.IconSize.BUTTON)
+			menu_button.add(menu_image)
+			header_bar.pack_start(menu_button)
+			menu = Gtk.Menu()
+			menu_item_open = Gtk.MenuItem(label="Open Project")
+			menu_item_open.connect("activate", self.on_menu_open_project)
+			menu.append(menu_item_open)
+
+			menu_button.set_popup(menu)
+			menu.show_all()
+
 			# Create a vertical box to hold widgets
 			self.main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
 			self.main_box.set_margin_start(12)
@@ -1354,6 +1379,9 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 
 			self.run_button.set_tooltip_text("Run the selected workflow with the selected options")
 			self.cancel_run_button.set_tooltip_text("Cancel the running workflow")
+
+			button_box.set_margin_start(12)
+			button_box.set_margin_end(12)
 			button_box.pack_start(self.cancel_run_button, False, False, 0)
 			button_box.pack_start(self.run_button, False, False, 0)
 
@@ -1381,6 +1409,10 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 				self.setErrored()
 
 		def on_delete_event(self, widget, event):
+			# check for a potential project dialog to call its cleanup
+			if hasattr(self, "project_dialog") and self.project_dialog is not None:
+				self.project_dialog.cleanup()
+
 			self.destroy()
 			Gtk.main_quit()
 			lock_socket.close()
@@ -1389,6 +1421,41 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 		def run(self):
 			Gtk.Widget.show_all(self)
 			Gtk.main()
+
+		def on_menu_open_project(self, menu_item):
+			if self.errored or self.is_running:
+				return
+			aihubprojfilter = Gtk.FileFilter()
+			aihubprojfilter.set_name("AIHub Project Files")
+			aihubprojfilter.add_pattern("*.aihubproj")
+			allfilter = Gtk.FileFilter()
+			allfilter.set_name("All Files")
+			allfilter.add_pattern("*")
+
+			dialog = Gtk.FileChooserNative(
+				title="Select a project file to open",
+				action=Gtk.FileChooserAction.OPEN,
+				transient_for=self,
+				accept_label="Open Project",
+				cancel_label="Cancel",
+				#ensure the file extension is .aihubproj
+			)
+			dialog.add_filter(aihubprojfilter)
+			dialog.add_filter(allfilter)
+			dialog.set_modal(True)
+			response = dialog.run()
+			if response == Gtk.ResponseType.ACCEPT:
+				project_file = dialog.get_filename()
+				if project_file is None or project_file.strip() == "":
+					dialog.destroy()
+					return
+				self.open_project(project_file)
+				update_aihub_common_property_value("", "", "last_opened_project", project_file, None)
+				dialog.destroy()
+			else:
+				# user cancelled the dialog
+				dialog.destroy()
+			return
 
 		def open_project(self, project_file_path: str, quiet: bool = False):
 			if self.errored or self.is_running:
@@ -1429,7 +1496,9 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 						if not isinstance(saved_config, dict):
 							raise Exception("Invalid saved.json file format.")
 
-					self.setStatus(f"Status: Opened project {self.project_folder}")
+					self.setStatus(f"Status: Opened project {self.project_file_contents.get('project_name', 'Unknown')}")
+					if hasattr(self, "category_selector") and self.category_selector is not None:
+						self.on_category_selected(self.category_selector)
 					if not quiet:
 						self.on_project_opened()
 			except Exception as e:

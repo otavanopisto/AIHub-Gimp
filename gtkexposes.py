@@ -325,10 +325,72 @@ class AIHubExposeImage(AIHubExposeBase):
 					raise e
 				finally:
 					new_image.delete()
+			elif self.selected_image is not None and self.selected_layer is not None and (
+				load_type == "current_layer_at_image_intersection" or
+				load_type == "merged_image_current_layer_intersection" or
+				load_type == "merged_image_current_layer_intersection_without_current_layer"
+			):
+				id_of_image = self.selected_image.get_id()
+				file_to_upload = os.path.join(GLib.get_tmp_dir(), f"aihub_temp_layer_{id_of_image}_{load_type}_{self.selected_layer.get_id()}.webp")
+				gfile = Gio.File.new_for_path(file_to_upload)
+				
+				new_image = Gimp.Image.new(self.selected_image.get_width(), self.selected_image.get_height(), self.selected_image.get_base_type())
+				new_layer = None
+				was_visible = False
+				if load_type == "current_layer_at_image_intersection":
+					new_layer = Gimp.Layer.new_from_drawable(self.selected_layer, new_image)
+					new_layer.set_visible(True)
+					new_image.insert_layer(new_layer, None, 0)
+					# we need to call the procedure gimp-layer-resize-to-image-size
+					procedure = Gimp.get_pdb().lookup_procedure("gimp-layer-resize-to-image-size")
+					config = procedure.create_config()
+					config.set_property('layer', new_layer)
+					procedure.run(config)
+				elif load_type == "merged_image_current_layer_intersection":
+					new_layer = Gimp.Layer.new_from_visible(self.selected_image, new_image)
+					new_image.insert_layer(new_layer, None, 0)
+				elif load_type == "merged_image_current_layer_intersection_without_current_layer":
+					if self.selected_layer.get_visible():
+						was_visible = True
+						self.selected_layer.set_visible(False)
+					new_layer = Gimp.Layer.new_from_visible(self.selected_image, new_image)
+					new_image.insert_layer(new_layer, None, 0)
+
+				new_layer.set_offsets(0,0)
+				new_layer.set_opacity(100.0)
+				new_layer.set_visible(True)
+
+				# now we need to calculate the intersection of the current layer with the image
+				layer_offsets = self.selected_layer.get_offsets()
+				x1 = max(0, layer_offsets.offset_x)
+				y1 = max(0, layer_offsets.offset_y)
+				x2 = min(self.selected_image.get_width(), layer_offsets.offset_x + self.selected_layer.get_width())
+				y2 = min(self.selected_image.get_height(), layer_offsets.offset_y + self.selected_layer.get_height())
+
+				# now we need to crop the new layer to the intersection
+				new_width = x2 - x1
+				new_height = y2 - y1
+				# for some reason the resize function takes negative offsets
+				offset_x = -x1
+				offset_y = -y1
+
+				new_image.resize(new_width, new_height, offset_x, offset_y)
+
+				try:
+					Gimp.file_save(Gimp.RunMode.NONINTERACTIVE, new_image, gfile, None)
+				except Exception as e:
+					raise e
+				finally:
+					if was_visible and load_type == "merged_image_current_layer_intersection_without_current_layer":
+						self.selected_layer.set_visible(True)
+					new_image.remove_layer(new_layer)
+					new_layer.delete()
+					new_image.delete()
+
 			elif self.selected_image is not None and self.selected_layer is not None and load_type == "merged_image_without_current_layer":
 				# save the layer to a temporary file
 				id_of_image = self.selected_image.get_id()
-				file_to_upload = os.path.join(GLib.get_tmp_dir(), f"aihub_temp_layer_{id_of_image}_no_{self.selected_layer.get_id()}.webp")
+				file_to_upload = os.path.join(GLib.get_tmp_dir(), f"aihub_temp_layer_{id_of_image}_{load_type}_{self.selected_layer.get_id()}.webp")
 				# create a new gfile to save the image
 				gfile = Gio.File.new_for_path(file_to_upload)
 
@@ -459,10 +521,16 @@ class AIHubExposeImage(AIHubExposeBase):
 
 	def load_image_data_for_internal(self):
 		load_type = self.data["type"]
-		# load types are ["current_layer","merged_image", "merged_image_without_current_layer","upload",]
+		# load types are ["current_layer","merged_image",
+		# "merged_image_without_current_layer","merged_image_current_layer_intersection",
+		# "merged_image_current_layer_intersection_without_current_layer",
+		# "current_layer_at_image_intersection", "upload",]
 		if (
 			load_type == "current_layer" or
-			load_type == "merged_image_without_current_layer"
+			load_type == "merged_image_without_current_layer" or
+			load_type == "merged_image_current_layer_intersection" or
+			load_type == "merged_image_current_layer_intersection_without_current_layer" or
+			load_type == "current_layer_at_image_intersection"
 		):
 			# this is our current GIMP image
 			image_selected = self.current_image
@@ -473,7 +541,13 @@ class AIHubExposeImage(AIHubExposeBase):
 					current_layer = layers[0]
 
 				layer = None
-				if current_layer is not None and (load_type == "current_layer" or load_type == "merged_image_without_current_layer"):
+				if current_layer is not None and (
+					load_type == "current_layer" or
+					load_type == "merged_image_without_current_layer" or
+					load_type == "merged_image_current_layer_intersection" or
+					load_type == "merged_image_current_layer_intersection_without_current_layer" or
+					load_type == "current_layer_at_image_intersection"
+				):
 					layer = current_layer
 
 				if layer is not None:
@@ -481,13 +555,33 @@ class AIHubExposeImage(AIHubExposeBase):
 					self.selected_image = image_selected
 					self.selected_layername = layer.get_name()
 
-					if layer is not None and load_type == "current_layer":
+					if layer is not None and (
+						load_type == "current_layer" or
+						load_type == "current_layer_at_image_intersection" or
+						load_type == "merged_image_current_layer_intersection" or
+						load_type == "merged_image_current_layer_intersection_without_current_layer"
+					):
 						offsets = layer.get_offsets()
 						self.value_pos_x = offsets.offset_x
 						self.value_pos_y =  offsets.offset_y
 						self.value_layer_id = str(layer.get_id())
-						self.value_width = layer.get_width()
-						self.value_height = layer.get_height()
+						if load_type == "current_layer":
+							self.value_width = layer.get_width()
+							self.value_height = layer.get_height()
+						else:
+							# for intersection types we need to calculate the intersection
+							x1 = max(0, offsets.offset_x)
+							y1 = max(0, offsets.offset_y)
+							x2 = min(image_selected.get_width(), offsets.offset_x + layer.get_width())
+							y2 = min(image_selected.get_height(), offsets.offset_y + layer.get_height())
+							self.value_width = x2 - x1
+							self.value_height = y2 - y1
+							if self.value_width < 0:
+								self.value_width = 0
+							if self.value_height < 0:
+								self.value_height = 0
+							self.value_pos_x = x1
+							self.value_pos_y = y1
 					else:
 						self.value_pos_x = 0
 						self.value_pos_y = 0
@@ -581,6 +675,76 @@ class AIHubExposeImage(AIHubExposeBase):
 					elif load_type == "current_layer":
 						pixbuf = self.selected_layer.get_thumbnail(400,height_from_ratio,Gimp.PixbufTransparency.KEEP_ALPHA)
 						self.namelabel.set_text(self.selected_layer.get_name())
+					elif (
+						load_type == "merged_image_current_layer_intersection" or
+						load_type == "merged_image_current_layer_intersection_without_current_layer" or
+						load_type == "current_layer_at_image_intersection"
+					):
+						# first we need to calculate the intersection of the current layer with the image
+						# to get x1, y1, x2, y2
+						if self.selected_layer is not None:
+							should_toggle_visibility = load_type == "merged_image_current_layer_intersection_without_current_layer"
+							original_visible_state = self.selected_layer.get_visible()
+
+							if should_toggle_visibility and original_visible_state:
+								self.selected_layer.set_visible(False)
+
+							# now we need to calculate x1, y1, x2, y2
+							layer_offsets = self.selected_layer.get_offsets()
+							x1 = max(0, layer_offsets.offset_x)
+							y1 = max(0, layer_offsets.offset_y)
+							x2 = min(self.selected_image.get_width(), layer_offsets.offset_x + self.selected_layer.get_width())
+							y2 = min(self.selected_image.get_height(), layer_offsets.offset_y + self.selected_layer.get_height())
+							# now we need to crop the new layer to the intersection
+							new_width = x2 - x1
+							new_height = y2 - y1
+							# for some reason the resize function takes negative offsets
+							offset_x = -x1
+							offset_y = -y1
+
+							if new_width <= 0 or new_height <= 0 or offset_x > 0 or offset_y > 0:
+								# no intersection
+								self.image_preview.clear()
+								return
+							
+							new_image = Gimp.Image.new(self.selected_image.get_width(), self.selected_image.get_height(), self.selected_image.get_base_type())
+
+							# first we must create a new layer from visible
+							new_layer = None
+							if load_type == "current_layer_at_image_intersection":
+								new_layer = Gimp.Layer.new_from_drawable(self.selected_layer, new_image)
+								new_image.insert_layer(new_layer, None, 0)
+								#copy the same offsets
+								original_offsets = self.selected_layer.get_offsets()
+								new_layer.set_offsets(original_offsets.offset_x, original_offsets.offset_y)
+								new_layer.set_opacity(100.0)
+								new_layer.set_visible(True)
+
+								# we need to call the procedure gimp-layer-resize-to-image-size
+								procedure = Gimp.get_pdb().lookup_procedure('gimp-layer-resize-to-image-size')
+								config = procedure.create_config()
+								config.set_property('layer', new_layer)
+								procedure.run(config)
+							else:
+								new_layer = Gimp.Layer.new_from_visible(self.selected_image, new_image)
+								new_image.insert_layer(new_layer, None, 0)
+								new_layer.set_offsets(0,0)
+								new_layer.set_opacity(100.0)
+								new_layer.set_visible(True)
+							
+							new_layer.resize(new_width, new_height, offset_x, offset_y)
+							pixbuf = new_layer.get_thumbnail(400,height_from_ratio,Gimp.PixbufTransparency.KEEP_ALPHA)
+							new_image.remove_layer(new_layer)
+							new_layer.delete()
+							new_image.delete()
+
+							if should_toggle_visibility and original_visible_state:
+								self.selected_layer.set_visible(True)
+
+							if load_type == "current_layer_at_image_intersection":
+								self.namelabel.set_text(self.selected_layer.get_name())
+							else:
+								self.namelabel.set_text(self.selected_image.get_name())
 					elif load_type == "merged_image_without_current_layer":
 						# hide the layer if not already visible
 						was_visible = False
@@ -710,6 +874,10 @@ class AIHubExposeImage(AIHubExposeBase):
 				self.error_label.show()
 				self.success_label.hide()
 				self.error_label.set_text("Please select a valid image.")
+			elif (self.value_width == 0 or self.value_height == 0):
+				self.error_label.show()
+				self.success_label.hide()
+				self.error_label.set_text("The selected image has no width or height.")
 			else:
 				self.success_label.hide()
 				self.error_label.hide()
@@ -718,11 +886,18 @@ class AIHubExposeImage(AIHubExposeBase):
 				self.error_label.show()
 				self.success_label.hide()
 				self.error_label.set_text("There is no active image/layer in GIMP.")
+			elif (self.value_width == 0 or self.value_height == 0):
+				self.error_label.show()
+				self.success_label.hide()
+				self.error_label.set_text("The selected image has no width or height.")
 			else:
 				self.error_label.hide()
 				self.success_label.hide()
 
 	def can_run(self):
+		value_width_and_height_valid = self.value_width > 0 and self.value_height > 0
+		if not value_width_and_height_valid:
+			return False
 		if (not self.is_using_internal_file()):
 			return self.selected_filename is not None or self.select_combo.get_active() != -1
 		else:

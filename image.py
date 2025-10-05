@@ -194,6 +194,8 @@ def handle_project_file(
 				layers = current_image.get_layers()
 				reference_layer = layers[-1] if len(layers) > 0 else None
 			
+			# get the selected layers before we insert the new one
+			selectedlayers = current_image.get_selected_layers()
 			if reference_layer is None:
 				current_image.insert_layer(layer, None, 0)
 				layer.set_offsets(pos_x, pos_y)
@@ -212,8 +214,10 @@ def handle_project_file(
 					# hide it and set it before the new layer
 					reference_layer.set_visible(False)
 					current_image.insert_layer(layer, parent_layer, reference_layer_index + 1)
-
 				layer.set_offsets(pos_x, pos_y)
+			# go back to the previously selected layers
+			# so the user doesnt suddenly lose their selection
+			current_image.set_selected_layers(selectedlayers)
 
 			# bug in GIMP 3.0.10 where the image is not updated if the layer is made visible again
 			img_width = current_image.get_width()

@@ -11,8 +11,9 @@ gettext.textdomain(textdomain)
 _ = gettext.gettext
 
 DEFAULT_THUMBNAIL = None
+UNKNOWN_THUMBNAIL = None
 
-EXTENSIONS_THUMBAILS = {
+EXTENSIONS_THUMBNAILS = {
     ".exe": "executable.png",
     ".dll": "executable.png",
     ".so": "executable.png",
@@ -59,6 +60,17 @@ EXTENSIONS_THUMBAILS = {
     ".bat": "script.png",
     ".ps1": "script.png",
 }
+
+EXTENSIONS_THUMBNAILS_CACHE = {}
+
+SUPPORTED_IMAGE_EXTENSIONS = [
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".bmp",
+    ".tiff",
+    ".gif"
+]
 
 # create a new Gtk Dialog from gimp to handle the specific project data
 class ProjectDialog(Gtk.Dialog):
@@ -128,8 +140,8 @@ class ProjectDialog(Gtk.Dialog):
         self.set_keep_above(True)
 
         # Add more widgets to display and edit project data as needed
-        self.update_xcf_file_list()
         self.rebuild_timeline_ui()
+        self.update_xcf_file_list()
         self.show_all()
 
     def refresh(self, new_project_file_contents, new_project_current_timeline_folder):
@@ -142,7 +154,89 @@ class ProjectDialog(Gtk.Dialog):
     def rebuild_timeline_ui(self):
         # we need to do something special and that is building a graph with the project file contents of
         # the timelines and the current timeline that we are at
-        pass
+        self.update_timeline_files()
+
+    def update_timeline_files(self):
+        timeline_files_folder = os.path.join(self.project_current_timeline_folder, "files")
+        timeline_files = [f for f in os.listdir(timeline_files_folder)]
+        # then we will create a Gtk FlowBox to show them with thumbnails if available
+        if not hasattr(self, 'timeline_file_list_widget'):
+            project_timeline_label = Gtk.Label(label="Timeline Files:")
+            project_timeline_label.set_halign(Gtk.Align.START)
+            self.internal_box.pack_start(project_timeline_label, False, False, 0)
+
+            self.timeline_file_list_widget = Gtk.FlowBox()
+            #ensure max width is only 600 pixels
+            self.timeline_file_list_widget.set_column_spacing(10)
+            self.timeline_file_list_widget.set_row_spacing(10)
+
+            self.internal_box.pack_start(self.timeline_file_list_widget, True, True, 0)
+
+        global SUPPORTED_IMAGE_EXTENSIONS
+        global EXTENSIONS_THUMBNAILS
+        global EXTENSIONS_THUMBNAILS_CACHE
+        global UNKNOWN_THUMBNAIL
+        if UNKNOWN_THUMBNAIL is None:
+            # create an icon pixbuf for the unknown thumbnail
+            UNKNOWN_THUMBNAIL = Pixbuf.new_from_file_at_scale(
+                os.path.join(
+                    os.path.dirname(os.path.abspath(__file__)),
+                    "icons",
+                    "unknown.png"
+                ),
+                100,
+                100,
+                True
+            )
+        for timeline_file in timeline_files:
+            thumbnail = UNKNOWN_THUMBNAIL
+            extension_with_dot = os.path.splitext(timeline_file)[1].lower()
+            if extension_with_dot in SUPPORTED_IMAGE_EXTENSIONS:
+                thumbnail_path = os.path.join(timeline_files_folder, timeline_file)
+                thumbnail = Pixbuf.new_from_file_at_scale(thumbnail_path, 100, 100, True)
+            elif extension_with_dot in EXTENSIONS_THUMBNAILS_CACHE:
+                thumbnail = EXTENSIONS_THUMBNAILS_CACHE[extension_with_dot]
+            elif extension_with_dot in EXTENSIONS_THUMBNAILS:
+                thumbnail_path = os.path.join(
+                    os.path.dirname(os.path.abspath(__file__)),
+                    "icons",
+                    EXTENSIONS_THUMBNAILS.get(extension_with_dot, "unknown.png")
+                )
+                thumbnail = Pixbuf.new_from_file_at_scale(thumbnail_path, 100, 100, True)
+                EXTENSIONS_THUMBNAILS_CACHE[extension_with_dot] = thumbnail
+
+            # first let's see if we already have this file in the list box
+            existing_file_element = None
+            for file_element in self.timeline_file_list_widget.get_children():
+                label = file_element.get_child().get_children()[1]
+                if label.get_text() == timeline_file:
+                    existing_file_element = file_element
+                    break
+            if existing_file_element is not None:
+                # If we found an existing file element, we can update it
+                existing_file_element.get_child().get_children()[0].set_from_pixbuf(thumbnail)
+            else:
+                # If not, we need to create a new row
+                # we need to be sure it is added in alphabetical order
+                new_file_element = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+                new_file_element.set_margin_top(10)
+                new_file_element.set_margin_bottom(10)
+                new_file_element.set_margin_start(10)
+                new_file_element.set_margin_end(10)
+                new_file_element.pack_start(Gtk.Image.new_from_pixbuf(thumbnail), False, False, 0)
+                new_file_element.pack_start(Gtk.Label(label=timeline_file), False, False, 0)
+
+                inserted = False
+                for i, existing_file_element in enumerate(self.timeline_file_list_widget.get_children()):
+                    existing_label = existing_file_element.get_child().get_children()[1]
+                    if timeline_file < existing_label.get_text():
+                        self.timeline_file_list_widget.insert(new_file_element, i)
+                        inserted = True
+                        break
+                if not inserted:
+                    self.timeline_file_list_widget.add(new_file_element)
+
+        self.timeline_file_list_widget.show_all()
 
     def on_close(self, callback):
         self.connect("response", lambda dialog, response: callback() or self.destroy() or self.cleanup())

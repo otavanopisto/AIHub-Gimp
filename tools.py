@@ -1610,8 +1610,12 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 			if not self.project_is_real or self.project_file_contents is None:
 				self.setStatus("Error: No project is currently opened.")
 				return
+			
+			if self.project_file_contents.get("current_timeline", "") == new_timeline_id:
+				# nothing to do
+				return
 
-			self.project_file_contents.current_timeline = new_timeline_id
+			self.project_file_contents["current_timeline"] = new_timeline_id
 			self.project_current_timeline_folder = os.path.join(self.project_folder, "timelines", new_timeline_id)
 
 			with open(self.project_file, "w") as f:

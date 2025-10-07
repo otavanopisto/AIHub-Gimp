@@ -175,15 +175,111 @@ class ProjectDialog(Gtk.Dialog):
     def rebuild_timeline_ui(self):
         # we need to do something special and that is building a graph with the project file contents of
         # the timelines and the current timeline that we are at
+        self.rebuild_timeline_tree()
         self.rebuild_timeline_files()
+
+    def on_timeline_selection_changed(self, selection):
+        model, treeiter = selection.get_selected()
+        if treeiter is not None:
+            timeline_id = model[treeiter][1]
+            if self.update_project_timeline is not None:
+                self.update_project_timeline(timeline_id)
+
+    def rebuild_timeline_tree(self):
+        if not hasattr(self, 'timeline_tree_widget'):
+            # one column the name, the other column the id
+            self.timeline_tree_store = Gtk.TreeStore(str, str)
+
+            box_inside_to_force_set_margins = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+            box_inside_to_force_set_margins.set_margin_start(10)
+            box_inside_to_force_set_margins.set_margin_end(50)
+
+            self.timeline_tree_widget = Gtk.TreeView(model=self.timeline_tree_store)
+            renderer = Gtk.CellRendererText()
+            column = Gtk.TreeViewColumn("Timelines", renderer, text=0)
+            self.timeline_tree_widget.append_column(column)
+            self.timeline_tree_widget.set_headers_visible(False)
+            self.timeline_tree_widget.set_size_request(200, 300)
+            self.timeline_tree_widget.get_selection().set_mode(Gtk.SelectionMode.SINGLE)
+            self.timeline_tree_widget.get_selection().connect("changed", self.on_timeline_selection_changed)
+            timelines_label = Gtk.Label(label="Project Timelines:")
+            timelines_label.set_margin_top(10)
+            timelines_label.set_margin_bottom(10)
+            self.internal_box.pack_start(timelines_label, False, False, 0)
+            self.internal_box.pack_start(box_inside_to_force_set_margins, False, False, 0)
+
+            # add scrollbar to the timeline tree widget
+            timeline_tree_scrolled_window = Gtk.ScrolledWindow()
+            timeline_tree_scrolled_window.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+            timeline_tree_scrolled_window.set_size_request(200, 300)
+            timeline_tree_scrolled_window.add(self.timeline_tree_widget)
+            box_inside_to_force_set_margins.pack_start(timeline_tree_scrolled_window, True, True, 0)
+
+        # start adding the timelines to the tree store without clearing it
+        existing_timelines = {}
+        timeline_values = self.project_file_contents.get("timelines", {}).values()
+        # we need to add the iter to the existing_timelines dict
+        for row in self.timeline_tree_store:
+            existing_timelines[row[1]] = row.iter
+            # also add all children
+            def add_children(parent_iter):
+                child_iter = self.timeline_tree_store.iter_children(parent_iter)
+                while child_iter is not None:
+                    existing_timelines[self.timeline_tree_store[child_iter][1]] = child_iter
+                    add_children(child_iter)
+                    child_iter = self.timeline_tree_store.iter_next(child_iter)
+            add_children(row.iter)
+
+        nodes_skipped = -1
+        past_nodes_skipped = None
+        while nodes_skipped != 0:
+            if past_nodes_skipped is not None and past_nodes_skipped == nodes_skipped:
+                # we are not making any progress, break the loop
+                # some nodes are probably orphaned
+                break
+
+            past_nodes_skipped = nodes_skipped
+            nodes_skipped = 0
+            for timeline in timeline_values:
+                timeline_id = timeline.get("id", None)
+                if timeline_id is None:
+                    continue
+                if timeline_id in existing_timelines:
+                    pass
+                else:
+                    timeline_parent_id = timeline.get("parent_id", None)
+                    timeline_name = timeline.get("name", "")
+                    if timeline_parent_id is None or timeline_parent_id == "":
+                        # add as root node
+                        new_iter = self.timeline_tree_store.append(None, [timeline_name, timeline_id])
+                        existing_timelines[timeline_id] = new_iter
+                    elif timeline_parent_id in existing_timelines:
+                        parent_iter = existing_timelines[timeline_parent_id]
+                        new_iter = self.timeline_tree_store.append(parent_iter, [timeline_name, timeline_id])
+                        existing_timelines[timeline_id] = new_iter
+                    else:
+                        nodes_skipped += 1
+
+        current_selected_timeline_id = self.project_file_contents.get("current_timeline", None)
+        if current_selected_timeline_id in existing_timelines:
+            current_iter = existing_timelines[current_selected_timeline_id]
+            path = self.timeline_tree_store.get_path(current_iter)
+            self.timeline_tree_widget.expand_to_path(path)
+            self.timeline_tree_widget.get_selection().select_path(path)
 
     def rebuild_timeline_files(self):
         timeline_files_folder = os.path.join(self.project_current_timeline_folder, "files")
-        timeline_files = [f for f in os.listdir(timeline_files_folder)]
+        timeline_files = []
+        if os.path.exists(timeline_files_folder) and os.path.isdir(timeline_files_folder):
+            timeline_files = [f for f in os.listdir(timeline_files_folder)]
         # then we will create a Gtk FlowBox to show them with thumbnails if available
         if not hasattr(self, 'timeline_file_list_widget'):
             project_timeline_label = Gtk.Label(label="Timeline Files:")
-            project_timeline_label.set_halign(Gtk.Align.START)
+            project_timeline_label.set_margin_top(20)
+            project_timeline_label.set_margin_bottom(10)
+            #project_timeline_label.set_halign(Gtk.Align.START)
+            # add a separator before the label
+            self.internal_box.pack_start(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 0)
             self.internal_box.pack_start(project_timeline_label, False, False, 0)
 
             self.timeline_file_list_widget = Gtk.FlowBox()
@@ -701,7 +797,11 @@ class ProjectDialog(Gtk.Dialog):
         # then we will create a Gtk FlowBox to show them with thumbnails if available
         if not hasattr(self, 'xcf_file_list_widget'):
             project_file_label = Gtk.Label(label="XCF Files in Project:")
-            project_file_label.set_halign(Gtk.Align.START)
+            project_file_label.set_margin_bottom(10)
+            project_file_label.set_margin_top(20)
+            #project_file_label.set_halign(Gtk.Align.START)
+            # add a separator before the label
+            self.internal_box.pack_start(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 0)
             self.internal_box.pack_start(project_file_label, False, False, 0)
 
             self.xcf_file_list_widget = Gtk.FlowBox()

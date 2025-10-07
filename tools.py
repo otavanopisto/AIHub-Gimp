@@ -1209,9 +1209,10 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 					on_close=self.on_close,
 					on_error=self.on_error,
 					header={"api-key": self.apikey},
+				)
+				self.websocket.run_forever(
 					sslopt={"cert_reqs": ssl.CERT_NONE} if self.apiprotocol == "wss" else None,
 				)
-				self.websocket.run_forever()
 			except Exception as e:
 				self.setStatus(f"Error: {str(e)}")
 				self.setErrored()

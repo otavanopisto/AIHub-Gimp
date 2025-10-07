@@ -41,7 +41,6 @@ class UpdateDialog(Gtk.Dialog):
             error_message = str(e)
 
         has_new_version = self.online_version and (self.online_version != version)
-        has_new_version = True # FOR TESTING PURPOSES
 
         if has_new_version:
             self.content_box.pack_start(Gtk.Label(label="A new version is available: " + self.online_version), False, False, 0)

@@ -8,7 +8,7 @@ gi.require_version('Gimp', '3.0')
 gi.require_version('GimpUi', '3.0')
 gi.require_version('Gtk', '3.0')
 
-from image import runImageProcedure
+from tools import runToolsProcedure
 
 from gi.repository import Gimp #type: ignore
 
@@ -22,19 +22,19 @@ class AiHub(Gimp.PlugIn):
 
 	def do_query_procedures(self):
 		return [
-			"ai-hub-image-procedure"
+			"ai-hub-tools-procedure"
 		]
 	
 	def do_create_procedure(self, name):
-		if name == "ai-hub-image-procedure":
+		if name == "ai-hub-tools-procedure":
 			procedure = Gimp.ImageProcedure.new(
 				self,
-				"ai-hub-image-procedure",  # Unique PDB procedure name
+				"ai-hub-tools-procedure",  # Unique PDB procedure name
 				Gimp.PDBProcType.PLUGIN,         # It's a standard plugin
-				runImageProcedure,                     # Function to call when run
+				runToolsProcedure,                     # Function to call when run
 				None,
 			)
-			procedure.set_menu_label("Image Tools")
+			procedure.set_menu_label("Launch AIHub")
 			procedure.add_menu_path("<Image>/AI Hub")
 			procedure.set_sensitivity_mask(
 				Gimp.ProcedureSensitivityMask.ALWAYS

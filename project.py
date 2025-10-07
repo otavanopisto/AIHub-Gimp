@@ -1,7 +1,6 @@
 import os
-from gi.repository import Gimp, GimpUi, Gtk, GLib, Gdk # type: ignore
+from gi.repository import Gimp, Gtk, GLib, Gdk # type: ignore
 from gi.repository.GdkPixbuf import Pixbuf # type: ignore
-from gi.repository.GdkPixbuf import InterpType # type: ignore
 from gi.repository import Gio # type: ignore
 import threading
 

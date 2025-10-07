@@ -1,4 +1,8 @@
 import shutil
+import ssl
+from about import AboutDialog
+from settings import SettingsDialog
+from update import UpdateDialog
 from websocket._app import WebSocketApp
 from workspace import AI_HUB_FOLDER_PATH, AI_HUB_SAVED_PATH, ensure_aihub_folder, get_aihub_common_property_value, update_aihub_common_property_value
 from gi.repository import Gimp, GimpUi, Gtk, GLib, Gdk # type: ignore
@@ -29,6 +33,13 @@ import sys
 #sys.stdout = open('log.txt', 'a')
 
 PROC_NAME = "AI Hub"
+
+VERSION = None
+try:
+	with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "VERSION"), "r") as f:
+		VERSION = f.read().strip()
+except Exception as e:
+	VERSION = "unknown"
 
 def get_active_image_id(combobox):
 	model = combobox.get_model()
@@ -237,7 +248,7 @@ def handle_project_file(
 
 
 
-def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
+def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 	GimpUi.init("AIHub.py")
 
 	lock_socket = acquire_process_lock()
@@ -259,6 +270,7 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 		def setErrored(self):
 			if threading.current_thread() is threading.main_thread():
 				self.errored = True
+				self.menu_item_open_project.set_sensitive(False)
 
 				if hasattr(self, "image_selector") and self.image_selector is not None:
 					self.image_selector.set_sensitive(False)
@@ -1196,7 +1208,8 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 					on_open=self.on_open,
 					on_close=self.on_close,
 					on_error=self.on_error,
-					header={"api-key": self.apikey}
+					header={"api-key": self.apikey},
+					sslopt={"cert_reqs": ssl.CERT_NONE} if self.apiprotocol == "wss" else None,
 				)
 				self.websocket.run_forever()
 			except Exception as e:
@@ -1296,9 +1309,27 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 			menu_button.add(menu_image)
 			header_bar.pack_start(menu_button)
 			menu = Gtk.Menu()
-			menu_item_open = Gtk.MenuItem(label="Open Project")
-			menu_item_open.connect("activate", self.on_menu_open_project)
-			menu.append(menu_item_open)
+			self.menu_item_open_project = Gtk.MenuItem(label="Open Project")
+			self.menu_item_open_project.connect("activate", self.on_menu_open_project)
+			menu.append(self.menu_item_open_project)
+
+			# add a divider to the menu
+			menu.append(Gtk.SeparatorMenuItem())
+
+			# add a menu entry for settings
+			self.menu_item_settings = Gtk.MenuItem(label="Settings")
+			self.menu_item_settings.connect("activate", self.on_menu_settings)
+			menu.append(self.menu_item_settings)
+
+			# add a menu entry for updating
+			self.menu_item_update = Gtk.MenuItem(label="Check for Updates")
+			self.menu_item_update.connect("activate", self.on_menu_update)
+			menu.append(self.menu_item_update)
+
+			# add a menu entry for about
+			self.menu_item_about = Gtk.MenuItem(label="About AIHub")
+			self.menu_item_about.connect("activate", self.on_menu_about)
+			menu.append(self.menu_item_about)
 
 			menu_button.set_popup(menu)
 			menu.show_all()
@@ -1411,6 +1442,49 @@ def runImageProcedure(procedure, run_mode, image, drawables, config, run_data):
 			except Exception as e:
 				self.setStatus(f"Error: {str(e)}")
 				self.setErrored()
+
+		def on_menu_settings(self, menu_item):
+			if not hasattr(self, "settings_dialog") or self.settings_dialog is None:
+				self.settings_dialog = SettingsDialog(
+					self,
+				)
+				self.settings_dialog.show_all()
+				self.settings_dialog.on_close(self.close_settings_dialog)
+
+		def close_settings_dialog(self):
+			if hasattr(self, "settings_dialog") and self.settings_dialog is not None:
+				self.settings_dialog.destroy()
+				self.settings_dialog = None
+
+		def on_menu_update(self, menu_item):
+			if not hasattr(self, "update_dialog") or self.update_dialog is None:
+				global VERSION
+				self.update_dialog = UpdateDialog(
+					self,
+					VERSION,
+				)
+				self.update_dialog.show_all()
+				self.update_dialog.on_close(self.close_update_dialog)
+
+		def close_update_dialog(self):
+			if hasattr(self, "update_dialog") and self.update_dialog is not None:
+				self.update_dialog.destroy()
+				self.update_dialog = None
+
+		def on_menu_about(self, menu_item):
+			if not hasattr(self, "about_dialog") or self.about_dialog is None:
+				global VERSION
+				self.about_dialog = AboutDialog(
+					self,
+					VERSION,
+				)
+				self.about_dialog.show_all()
+				self.about_dialog.on_close(self.close_about_dialog)
+
+		def close_about_dialog(self):
+			if hasattr(self, "about_dialog") and self.about_dialog is not None:
+				self.about_dialog.destroy()
+				self.about_dialog = None
 
 		def on_delete_event(self, widget, event):
 			# check for a potential project dialog to call its cleanup

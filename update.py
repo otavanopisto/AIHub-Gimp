@@ -101,6 +101,8 @@ class UpdateDialog(Gtk.Dialog):
                 # remove update directory
                 shutil.rmtree(os.path.join(local_path, "update"))
 
+                self.update_button.set_label("Update Failed")
+
                 self.content_box.pack_start(AIHubLabel(str(e)).get_widget(), False, False, 0)
                 self.add_button(Gtk.STOCK_CLOSE, Gtk.ResponseType.CLOSE)
                 self.show_all()
@@ -120,6 +122,8 @@ class UpdateDialog(Gtk.Dialog):
 
         # remove update directory
         shutil.rmtree(os.path.join(local_path, "update"))
+
+        self.update_button.set_label("Update Complete")
 
         # show a message dialog requesting to restart AIHub to apply the update
         self.content_box.pack_start(AIHubLabel("Update complete, please restart AIHub to apply the update.").get_widget(), False, False, 0)

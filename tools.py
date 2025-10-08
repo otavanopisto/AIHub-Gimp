@@ -657,6 +657,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 					self.project_dialog.show_all()
 					self.project_dialog.on_close(self.close_project)
 					self.project_dialog.on_change_timeline(self.on_change_project_timeline)
+					self.project_dialog.on_change_project_file(self.on_change_project_file)
 
 		def on_context_selected(self, combo):
 			try:
@@ -722,14 +723,14 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 								# we are not in the same project type, so we skip this workflow
 								continue
 
-							current_timeline_info = self.project_file_contents.get("timelines", {}).get(self.project_file_contents.get("current_timeline", ""), {})
+							#current_timeline_info = self.project_file_contents.get("timelines", {}).get(self.project_file_contents.get("current_timeline", ""), {})
 							# if the current timeline we are in is the initial timeline we allow to recreate the timeline
-							should_show_project_init = current_timeline_info.get("initial", False)
+							#should_show_project_init = current_timeline_info.get("initial", False)
 
 							# we are not showing project inits if we are outside of the initial timeline
 							# as it would then make no sense and break things
-							if not should_show_project_init and workflow.get("project_type_init", False):
-								continue
+							#if not should_show_project_init and workflow.get("project_type_init", False):
+							#	continue
 
 							# if the workflow has a project type that matches ours, then we mark it as special
 							# so that we can display it first
@@ -1561,8 +1562,12 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 					self.project_is_real = True
 					self.project_file = project_file_path
 					self.project_file_contents = project_absolute_config
-					self.project_current_timeline_folder = os.path.join(self.project_folder, "timelines", self.project_file_contents.get("current_timeline", ""))
-					if not os.path.isdir(self.project_current_timeline_folder):
+					current_timeline_id = self.project_file_contents.get("current_timeline", None)
+					if current_timeline_id is None:
+						self.project_current_timeline_folder = None
+					else:
+						self.project_current_timeline_folder = os.path.join(self.project_folder, "timelines", current_timeline_id)
+					if self.project_current_timeline_folder is not None and not os.path.isdir(self.project_current_timeline_folder):
 						raise Exception("Invalid project file format: current timeline folder does not exist.")
 					self.project_saved_config_json_file = os.path.join(self.project_folder, "saved.json")
 					# Ensure the saved config file exists
@@ -1615,14 +1620,52 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 				# nothing to do
 				return
 
-			self.project_file_contents["current_timeline"] = new_timeline_id
-			self.project_current_timeline_folder = os.path.join(self.project_folder, "timelines", new_timeline_id)
+			changed_timeline = self.project_file_contents["current_timeline"] != new_timeline_id
+			if changed_timeline:
+				self.project_file_contents["current_timeline"] = new_timeline_id
+				if new_timeline_id is None:
+					self.project_current_timeline_folder = None
+				else:
+					self.project_current_timeline_folder = os.path.join(self.project_folder, "timelines", new_timeline_id)
+
+				for element in self.workflow_elements_all:
+					element.update_project_current_timeline_path_and_saved_path(self.project_current_timeline_folder, self.project_saved_config_json_file)
+
+				with open(self.project_file, "w") as f:
+					json.dump(self.project_file_contents, f, indent=4)
+
+				if self.project_current_timeline_folder is not None and not os.path.isdir(self.project_current_timeline_folder):
+					os.makedirs(self.project_current_timeline_folder)
+
+				if hasattr(self, "project_dialog") and self.project_dialog is not None:
+					if threading.current_thread() is threading.main_thread():
+						self.project_dialog.refresh(self.project_file_contents, self.project_current_timeline_folder)
+					else:
+						GLib.idle_add(self.project_dialog.refresh, self.project_file_contents, self.project_current_timeline_folder)
+
+		def on_change_project_file(self, new_project_file_contents):
+			if self.errored:
+				return
+			
+			if not self.project_is_real or self.project_file_contents is None:
+				self.setStatus("Error: No project is currently opened.")
+				return
+			
+			new_current_timeline = new_project_file_contents["current_timeline"]
+			self.project_file_contents = new_project_file_contents
+			if new_current_timeline is None:
+				self.project_current_timeline_folder = None
+			else:
+				self.project_current_timeline_folder = os.path.join(self.project_folder, "timelines", new_current_timeline)
 
 			with open(self.project_file, "w") as f:
 				json.dump(self.project_file_contents, f, indent=4)
 
-			if not os.path.isdir(self.project_current_timeline_folder):
+			if self.project_current_timeline_folder is not None and not os.path.isdir(self.project_current_timeline_folder):
 				os.makedirs(self.project_current_timeline_folder)
+
+			for element in self.workflow_elements_all:
+				element.update_project_current_timeline_path_and_saved_path(self.project_current_timeline_folder, self.project_saved_config_json_file)
 
 			if hasattr(self, "project_dialog") and self.project_dialog is not None:
 				if threading.current_thread() is threading.main_thread():
@@ -1724,6 +1767,9 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 				else:
 					self.setStatus(f"Status: Branched new timeline '{new_timeline_name}'")
 
+				for element in self.workflow_elements_all:
+					element.update_project_current_timeline_path_and_saved_path(self.project_current_timeline_folder, self.project_saved_config_json_file)
+
 				if self.is_running:
 					self.started_new_timeline_from_init_last_run = current_timeline_info.get("initial", False)
 			else:
@@ -1741,12 +1787,16 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 
 		def on_project_opened(self):
 			update_aihub_common_property_value("", "", "last_opened_project", self.project_file, None)
+			for element in self.workflow_elements_all:
+				element.update_project_current_timeline_path_and_saved_path(self.project_current_timeline_folder, self.project_saved_config_json_file)
 			if (threading.current_thread() is threading.main_thread()):
 				self.setup_project_ui()
 			else:
 				GLib.idle_add(self.setup_project_ui)
 
 		def on_project_closed(self):
+			for element in self.workflow_elements_all:
+				element.update_project_current_timeline_path_and_saved_path(self.project_current_timeline_folder, self.project_saved_config_json_file)
 			# force a reset like this
 			self.on_category_selected(self.category_selector)
 			update_aihub_common_property_value("", "", "last_opened_project", None, None)
@@ -1757,6 +1807,8 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 
 		def complete_steps_after_new_empty_project(self, error):
 			def do_action():
+				for element in self.workflow_elements_all:
+					element.update_project_current_timeline_path_and_saved_path(self.project_current_timeline_folder, self.project_saved_config_json_file)
 				if self.started_new_project_last_run or self.started_new_timeline_from_init_last_run:
 					self.started_new_project_last_run = False
 					self.started_new_timeline_from_init_last_run = False

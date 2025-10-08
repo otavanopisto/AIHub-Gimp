@@ -45,6 +45,10 @@ class AIHubExposeBase:
 		if ("value" in self.data and self.data["value"] is not None):
 			self.initial_value = self.data["value"]
 
+	def update_project_current_timeline_path_and_saved_path(self, new_timeline_path, new_saved_path):
+		self.project_current_timeline_path = new_timeline_path
+		self.project_saved_path = new_saved_path
+
 	def read_project_config_json(self, key):
 		if not self.projectname or self.projectname == "":
 			return None

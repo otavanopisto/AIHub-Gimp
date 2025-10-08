@@ -106,11 +106,12 @@ class ProjectDialog(Gtk.Dialog):
             on_focus_dialog
         ):
         super().__init__(title=title, transient_for=parent, flags=0)
-        self.set_default_size(600, 400)
+        self.set_default_size(600, 800)
         self.project_file_contents = project_file_contents
         self.project_current_timeline_folder = project_current_timeline_folder
         self.project_folder = project_folder
         self.update_project_timeline = None
+        self.update_project_file = None
         self.image_model = image_model
 
         self.images_opened = []
@@ -208,9 +209,43 @@ class ProjectDialog(Gtk.Dialog):
             self.internal_box.pack_start(timelines_label, False, False, 0)
             self.internal_box.pack_start(box_inside_to_force_set_margins, False, False, 0)
 
+            # add a menu to each timeline for a context menu on second click for deleting and renaming with a divider
+            def on_timeline_right_click(treeview, event):
+                if event.type == Gdk.EventType.BUTTON_PRESS and event.button == Gdk.BUTTON_SECONDARY:
+                    # get the clicked row
+                    path_info = treeview.get_path_at_pos(int(event.x), int(event.y))
+                    if path_info is not None:
+                        path, col, cellx, celly = path_info
+                        treeview.grab_focus()
+                        treeview.set_cursor(path, col, 0)
+                        model, treeiter = treeview.get_selection().get_selected()
+                        if treeiter is not None:
+                            timeline_id = model[treeiter][1]
+                            timeline_in_question = self.project_file_contents.get("timelines", {}).get(timeline_id, None)
+                            if timeline_in_question is not None:
+                                menu = Gtk.Menu()
+                                menu_item_rename = Gtk.MenuItem(label="Rename Timeline")
+                                def on_rename_activate(menu_item):
+                                    self.rename_timeline(timeline_id)
+                                menu_item_rename.connect("activate", on_rename_activate)
+                                menu.append(menu_item_rename)
+
+                                menu_item_delete = Gtk.MenuItem(label="Delete Timeline")
+                                def on_delete_activate(menu_item):
+                                    self.delete_timeline(timeline_id)
+                                menu_item_delete.connect("activate", on_delete_activate)
+                                menu.append(menu_item_delete)
+
+                                menu.show_all()
+                                menu.popup_at_pointer(event)
+                    return True
+                return False
+            
+            self.timeline_tree_widget.connect("button-press-event", on_timeline_right_click)
+
             # add scrollbar to the timeline tree widget
             timeline_tree_scrolled_window = Gtk.ScrolledWindow()
-            timeline_tree_scrolled_window.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+            timeline_tree_scrolled_window.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
             timeline_tree_scrolled_window.set_size_request(200, 300)
             timeline_tree_scrolled_window.add(self.timeline_tree_widget)
             box_inside_to_force_set_margins.pack_start(timeline_tree_scrolled_window, True, True, 0)
@@ -230,6 +265,17 @@ class ProjectDialog(Gtk.Dialog):
                     child_iter = self.timeline_tree_store.iter_next(child_iter)
             add_children(row.iter)
 
+        # delete any timelines that are no longer present
+        for timeline_id in list(existing_timelines.keys()):
+            found = False
+            for timeline in timeline_values:
+                if timeline.get("id", None) == timeline_id:
+                    found = True
+                    break
+            if not found:
+                self.timeline_tree_store.remove(existing_timelines[timeline_id])
+                del existing_timelines[timeline_id]
+
         nodes_skipped = -1
         past_nodes_skipped = None
         while nodes_skipped != 0:
@@ -245,7 +291,11 @@ class ProjectDialog(Gtk.Dialog):
                 if timeline_id is None:
                     continue
                 if timeline_id in existing_timelines:
-                    pass
+                    # update the name if needed
+                    existing_iter = existing_timelines[timeline_id]
+                    timeline_name = timeline.get("name", "")
+                    if timeline_name != self.timeline_tree_store[existing_iter][0]:
+                        self.timeline_tree_store[existing_iter][0] = timeline_name
                 else:
                     timeline_parent_id = timeline.get("parent_id", None)
                     timeline_name = timeline.get("name", "")
@@ -403,6 +453,87 @@ class ProjectDialog(Gtk.Dialog):
 
         self.timeline_file_list_widget.show_all()
 
+    def rename_timeline(self, timeline_id):
+        timeline_in_question = self.project_file_contents.get("timelines", {}).get(timeline_id, None)
+        if timeline_in_question is None:
+            return
+        # we need to ask for the new name
+        # first we must ask for confirmation
+        dialog = Gtk.Dialog(title="Rename Timeline", parent=self, flags=0)
+        dialog.set_keep_above(True)
+        dialog.set_default_size(300, 100)
+        content_area = dialog.get_content_area()
+        content_area.set_spacing(10)
+        content_area.set_border_width(10)
+        entry = Gtk.Entry()
+        entry.set_text(timeline_in_question.get("name", ""))
+        content_area.pack_start(Gtk.Label(label="New name:"), False, False, 0)
+        content_area.pack_start(entry, False, False, 0)
+        dialog.add_button(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL)
+        dialog.add_button(Gtk.STOCK_OK, Gtk.ResponseType.OK)
+        dialog.show_all()
+        response = dialog.run()
+        if response == Gtk.ResponseType.OK:
+            new_name = entry.get_text().strip()
+            if new_name != "":
+                timeline_in_question["name"] = new_name
+                self.project_file_contents = self.project_file_contents.copy()
+                self.update_project_file(self.project_file_contents)
+        dialog.destroy()
+
+    def actually_delete_timeline(self, timeline_id):
+        deleted_current_timeline = timeline_id == self.project_file_contents.get("current_timeline", None)
+        self.project_file_contents.get("timelines", {}).pop(timeline_id, None)
+
+        for existing_timeline_element in self.project_file_contents.get("timelines", {}).values():
+            if existing_timeline_element.get("parent_id", None) == timeline_id:
+                that_deleted_current_timeline = self.actually_delete_timeline(existing_timeline_element.get("id", None))
+                if that_deleted_current_timeline:
+                    deleted_current_timeline = True
+
+        # delete from the tree store
+        for row in self.timeline_tree_store:
+            if row[1] == timeline_id:
+                self.timeline_tree_store.remove(row.iter)
+                break
+
+        return deleted_current_timeline
+
+    def delete_timeline(self, timeline_id):
+        timeline_in_question = self.project_file_contents.get("timelines", {}).get(timeline_id, None)
+        if timeline_in_question is None:
+            return
+        # first we must ask for confirmation
+        dialog = Gtk.MessageDialog(parent=self, flags=0, message_type=Gtk.MessageType.QUESTION,
+                                   buttons=Gtk.ButtonsType.YES_NO, text=f"Are you sure you want to delete the timeline {timeline_in_question.get('name', 'unknown')}? " +
+                                   "this action cannot be reversed and will delete any timeline files associated with it")
+        dialog.set_keep_above(True)
+        response = dialog.run()
+        dialog.destroy()
+        if response == Gtk.ResponseType.YES:
+            timeline_to_be_current = self.project_file_contents.get("current_timeline", None)
+            deleted_current = self.actually_delete_timeline(timeline_id)
+
+            if deleted_current:
+                # pick the first initial timeline available
+                first_timeline_id = None
+                for t in self.project_file_contents.get("timelines", {}).values():
+                    if t.get("initial", False):
+                        first_timeline_id = t.get("id", None)
+                    break
+
+                if first_timeline_id is not None:
+                    timeline_to_be_current = first_timeline_id
+                else:
+                    timeline_to_be_current = None
+
+            # make a shallow copy of the project file contents and update the current timeline
+            # that is because this is a dict and we want to avoid mutating the original one
+            # that is a reference to the one in the tools.py
+            self.project_file_contents = self.project_file_contents.copy()
+            self.project_file_contents["current_timeline"] = timeline_to_be_current
+            self.update_project_file(self.project_file_contents)
+        
     def on_close(self, callback):
         self.connect("response", lambda dialog, response: callback() or self.destroy() or self.cleanup())
 
@@ -534,6 +665,9 @@ class ProjectDialog(Gtk.Dialog):
 
     def on_change_timeline(self, callback):
         self.update_project_timeline = callback
+
+    def on_change_project_file(self, callback):
+        self.update_project_file = callback
 
     def on_menu_new_xcf_file(self, menu_item):
         # first we build yet another dialog asking for width and height of the canvas in pixels

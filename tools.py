@@ -125,7 +125,7 @@ def get_project_folder_in_timeline(timeline_path, project_is_real):
 
 	return project_folder
 
-def store_project_file(timeline_path, project_is_real, filename, file_action, bytes, separator=b""):
+def store_project_file(timeline_path, project_is_real, filename, file_action, bytes, separator=b"", protected_run_mode=False):
 	# first lets get the folder for the project files
 	project_folder = get_project_folder_in_timeline(timeline_path, project_is_real)
 	if not os.path.exists(project_folder):
@@ -134,6 +134,28 @@ def store_project_file(timeline_path, project_is_real, filename, file_action, by
 	if not os.path.exists(files_folder):
 		os.makedirs(files_folder, exist_ok=True)
 	filepath = os.path.join(files_folder, filename)
+
+	if protected_run_mode:
+		# we are in protected mode, so we ignore file writing overwrites, we still write to the project folder but
+		# we do not allow overwriting existing files, or appending to existing file batches, instead we will use
+		# external numeric suffixes to avoid overwriting existing files
+		base, ext = os.path.splitext(filename)
+		highest_index_found = 0
+		for fname in os.listdir(files_folder):
+			if fname.endswith(filename):
+				prefix = fname[: -(len(filename) + 1)]
+				if prefix.isdigit():
+					index = int(prefix)
+					if index > highest_index_found:
+						highest_index_found = index
+		i = highest_index_found + 1
+
+		# this will not be recognized as a batch, because the number is before the base name
+		filepath = os.path.join(files_folder, f"{i}_{base}{ext}")
+		with open(filepath, "wb") as f:
+			f.write(bytes)
+		return filepath
+	
 	if file_action == "REPLACE":
 		with open(filepath, "wb") as f:
 			f.write(bytes)
@@ -141,11 +163,16 @@ def store_project_file(timeline_path, project_is_real, filename, file_action, by
 	elif file_action == "APPEND":
 		# we want to get the filename with a number appended to it before the extension
 		base, ext = os.path.splitext(filename)
-		# now in the directory we are supposed to store we are going to try to see which one
-		# is the filename with the highest number
-		i = 1
-		while os.path.exists(os.path.join(files_folder, f"{base}_{i}{ext}")):
-			i += 1
+		# Find the highest index by scanning the directory once
+		highest_index_found = 0
+		for fname in os.listdir(files_folder):
+			if fname.startswith(f"{base}_") and fname.endswith(ext):
+				suffix = fname[len(base) + 1 : -len(ext)]
+				if suffix.isdigit():
+					index = int(suffix)
+					if index > highest_index_found:
+						highest_index_found = index
+		i = highest_index_found + 1
 		finalpath = os.path.join(files_folder, f"{base}_{i}{ext}")
 		with open(finalpath, "wb") as f:
 			f.write(bytes)
@@ -177,11 +204,13 @@ def handle_project_file(
 	bytes,
 	action,
 	current_image,
+	protected_run_mode=False
 ):
 	file_name = action.get("file_name", "unnamed") if action else "unnamed"
 	file_action = action.get("file_action", "REPLACE") if action else "REPLACE"
 	separator = action.get("file_separator", b"") if action else b""
-	finalpath = store_project_file(timeline_path, project_is_real, file_name, file_action, bytes, separator)
+	finalpath = store_project_file(timeline_path, project_is_real, file_name, file_action, bytes, separator, protected_run_mode)
+	should_delete_file_afterwards = False
 	if action is not None:
 		if action["action"] == "NEW_IMAGE" or (action["action"] == "NEW_LAYER" and current_image is None):
 			# when real projects we do not open the image automatically
@@ -244,6 +273,13 @@ def handle_project_file(
 
 			# do it again for good measure
 			pixbuf3 = current_image.get_thumbnail(400,height_from_ratio,Gimp.PixbufTransparency.KEEP_ALPHA)
+			should_delete_file_afterwards = True
+	
+	if should_delete_file_afterwards and os.path.exists(finalpath):
+		try:
+			os.remove(finalpath)
+		except Exception as e:
+			print("Error removing temporary file:", e)
 
 
 
@@ -318,6 +354,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 							file_data,
 							next_file_info.get("action", None),
 							self.selected_image,
+							self.protected_run_mode,
 						)
 						MESSAGE_LOCK.release()
 						return
@@ -392,6 +429,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 									file_it_describes,
 									message_parsed.get("action", None),
 									self.selected_image,
+									self.protected_run_mode,
 								)
 							except Exception as e:
 								if self.is_running:
@@ -403,7 +441,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 						else:
 							self.next_file_info.append(message_parsed)
 					elif message_parsed["type"] == "PREPARE_BATCH":
-						if message_parsed.get("file_action", "APPEND") == "REPLACE":
+						if message_parsed.get("file_action", "APPEND") == "REPLACE" and not self.protected_run_mode:
 							# we need to remove all the potentially existing files in the batch
 							# TODO: implement removing existing files in the batch
 							filename = message_parsed.get("file_name", "new batch")
@@ -1033,6 +1071,8 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 			self.started_new_project_last_run = False
 			self.started_new_timeline_from_init_last_run = False
 
+			self.protected_run_mode = False
+
 			# check if the workflow is project_type_init so then we have to request the user to create a new project
 			# in that case we need to show a dialog asking the user to create a new project
 			# the dialog should be to save a file dialog with a name for the project
@@ -1073,8 +1113,27 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 				# the options for the workflow, which we don't need to do here
 				# self.started_new_timeline_from_init_last_run = True
 			elif self.project_is_real:
-				workflow_name = workflow.get("label", "Unknown")
-				self.branch_project_timeline(workflow_name, is_initial=False)
+				# get the project type of the workflow
+				project_type = workflow.get("project_type", None)
+				current_project_type = self.project_file_contents.get("project_type", None)
+
+				# we only branch the timeline if the workflow has a project type that matches the current project type
+				# this is to avoid branching the timeline for general workflows that have no project type and are meant to do minor changes
+				# within the current project
+				if project_type is not None and current_project_type == project_type:
+					workflow_name = workflow.get("label", "Unknown")
+					self.branch_project_timeline(workflow_name, is_initial=False)
+				else:
+					# we are running a workflow that is not related to the current project type
+					# so we are going to run it in protected mode, meaning that we won't allow it to
+					# modify the project files or the timeline files
+					self.protected_run_mode = True
+			else:
+				# we run this in protected mode because these actions are supposed to be minor edits
+				# that are independent of each other so they don't need to read or write any project files
+				# and we don't want them to accidentally modify anything, anyway layers won't accumulate
+				# because we delete them after each run, and even if they did, who cares; they would be in a temp folder
+				self.protected_run_mode = True
 
 			try:
 				# check if all the elements are can_run returns true
@@ -1225,6 +1284,8 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 			#GimpUi.Dialog.__init__(self, use_header_bar=use_header_bar)
 
 			self.connected: bool = False
+
+			self.protected_run_mode: bool = False
 
 			self.message_label: Gtk.TextView
 			self.websocket: WebSocketApp

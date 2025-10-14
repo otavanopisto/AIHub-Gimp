@@ -7,11 +7,14 @@ import shutil
 
 from label import AIHubLabel
 
+import gettext
+_ = gettext.gettext
+
 IGNORES = ["__pycache__", ".git", ".gitignore", "websocket"]
 
 class UpdateDialog(Gtk.Dialog):
     def __init__(self, parent, version):
-        super().__init__(title="Update Gimp AIHub", parent=parent, flags=0)
+        super().__init__(title=_("Update Gimp AIHub"), parent=parent, flags=0)
         self.set_default_size(400, 300)
 
         self.set_keep_above(True)
@@ -21,7 +24,7 @@ class UpdateDialog(Gtk.Dialog):
         self.content_box.set_border_width(10)
         content_area.add(self.content_box)
 
-        self.content_box.pack_start(Gtk.Label(label="GIMP AIHub Version: " + (version if version else "unknown")), False, False, 0)
+        self.content_box.pack_start(Gtk.Label(label=_("GIMP AIHub Version: {}").format(version if version else _("unknown"))), False, False, 0)
 
         # https://raw.githubusercontent.com/otavanopisto/AIHub-Gimp/refs/heads/main/VERSION
         # contains the version as it is online hosted on github, we need to fetch it and compare it to the current version
@@ -43,24 +46,24 @@ class UpdateDialog(Gtk.Dialog):
         has_new_version = self.online_version and (self.online_version != version)
 
         if has_new_version:
-            self.content_box.pack_start(Gtk.Label(label="A new version is available: " + self.online_version), False, False, 0)
+            self.content_box.pack_start(Gtk.Label(label=_("A new version is available: {}").format(self.online_version)), False, False, 0)
             # add an update button
-            self.update_button = Gtk.Button(label="Update Now")
+            self.update_button = Gtk.Button(label=_("Update Now"))
             self.update_button.connect("clicked", self.on_update_clicked)
             self.content_box.pack_start(self.update_button, False, False, 0)
         elif self.online_version is None:
-            self.content_box.pack_start(Gtk.Label(label="Could not check for updates, check your connection"), False, False, 0)
+            self.content_box.pack_start(Gtk.Label(label=_("Could not check for updates, check your connection")), False, False, 0)
             if (error_message is not None):
                 self.content_box.pack_start(AIHubLabel(error_message).get_widget(), False, False, 0)
             self.add_button(Gtk.STOCK_CLOSE, Gtk.ResponseType.CLOSE)
         else:
-            self.content_box.pack_start(Gtk.Label(label="You are up to date!"), False, False, 0)
+            self.content_box.pack_start(Gtk.Label(label=_("You are up to date!")), False, False, 0)
 
         self.show_all()
 
     def on_update_clicked(self, button):
         self.update_button.set_sensitive(False)
-        self.update_button.set_label("Updating...")
+        self.update_button.set_label(_("Updating..."))
 
         # first lets create a backup of the current installation
         local_path = os.path.dirname(os.path.abspath(__file__))
@@ -101,7 +104,7 @@ class UpdateDialog(Gtk.Dialog):
                 # remove update directory
                 shutil.rmtree(os.path.join(local_path, "update"))
 
-                self.update_button.set_label("Update Failed")
+                self.update_button.set_label(_("Update Failed"))
 
                 self.content_box.pack_start(AIHubLabel(str(e)).get_widget(), False, False, 0)
                 self.add_button(Gtk.STOCK_CLOSE, Gtk.ResponseType.CLOSE)
@@ -123,10 +126,10 @@ class UpdateDialog(Gtk.Dialog):
         # remove update directory
         shutil.rmtree(os.path.join(local_path, "update"))
 
-        self.update_button.set_label("Update Complete")
+        self.update_button.set_label(_("Update Complete"))
 
         # show a message dialog requesting to restart AIHub to apply the update
-        self.content_box.pack_start(AIHubLabel("Update complete, please restart AIHub to apply the update.").get_widget(), False, False, 0)
+        self.content_box.pack_start(AIHubLabel(_("Update complete, please restart AIHub to apply the update.")).get_widget(), False, False, 0)
         self.add_button(Gtk.STOCK_CLOSE, Gtk.ResponseType.CLOSE)
         self.show_all()
 

@@ -13,12 +13,13 @@ from tools import runToolsProcedure
 from gi.repository import Gimp #type: ignore
 
 import gettext
-textdomain = "gimp30-python"
+_ = gettext.gettext
+#textdomain = "gimp30-python"
 
 class AiHub(Gimp.PlugIn):
-	def do_set_i18n(self, name):
-		gettext.bindtextdomain(textdomain, Gimp.locale_directory())
-		return True, 'gimp30-python', None
+	#def do_set_i18n(self, name):
+	#	gettext.bindtextdomain(textdomain, Gimp.locale_directory())
+	#	return True, 'gimp30-python', None
 
 	def do_query_procedures(self):
 		return [
@@ -34,7 +35,7 @@ class AiHub(Gimp.PlugIn):
 				runToolsProcedure,                     # Function to call when run
 				None,
 			)
-			procedure.set_menu_label("Launch AIHub")
+			procedure.set_menu_label(_("Launch AIHub"))
 			procedure.add_menu_path("<Image>/AI Hub")
 			procedure.set_sensitivity_mask(
 				Gimp.ProcedureSensitivityMask.ALWAYS

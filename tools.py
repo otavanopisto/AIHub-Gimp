@@ -22,15 +22,24 @@ import socket
 import threading
 
 import urllib.request
+import locale
 
 import gettext
-textdomain = "gimp30-python"
-gettext.textdomain(textdomain)
+#textdomain = "gimp30-python"
+#gettext.textdomain(textdomain)
 _ = gettext.gettext
 
-import sys
+#import sys
 #sys.stderr = open('err.txt', 'a')
 #sys.stdout = open('log.txt', 'a')
+
+TRANSLATED_CONTEXT = {
+	"image": _("Image"),
+	"video": _("Video"),
+	"audio": _("Audio"),
+	"3d": _("3D"),
+	"text": _("Text"),
+}
 
 PROC_NAME = "AI Hub"
 
@@ -185,7 +194,7 @@ def store_project_file(timeline_path, project_is_real, filename, file_action, by
 				f.write(separator)
 			f.write(bytes)
 	else:
-		raise ValueError(f"Invalid file_action {file_action}, must be REPLACE or APPEND")
+		raise ValueError(_("Invalid file_action {}, must be REPLACE or APPEND").format(file_action))
 	
 def open_project_file_as_image(finalpath):
 	# now try to open it in gimp if it is an image
@@ -222,7 +231,7 @@ def handle_project_file(
 			# we are going to add a new layer to the current image
 			# first lets make a pixbuf from the file at finalpath
 			pixbuf = Pixbuf.new_from_file(finalpath)
-			new_name = action.get("name", "AI Hub Layer")
+			new_name = action.get("name", _("AI Hub Layer"))
 			layer = Gimp.Layer.new_from_pixbuf(current_image, new_name, pixbuf, 100, Gimp.LayerMode.NORMAL, 0, 100)
 			reference_layer_raw = action.get("reference_layer_id", None)
 			reference_layer_id = int(reference_layer_raw) if reference_layer_raw is not None and reference_layer_raw.isdigit() else None
@@ -360,9 +369,9 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 						return
 					except Exception as e:
 						if self.is_running:
-							self.mark_as_running(False, "Error: Failed to write received file from server " + str(e))
+							self.mark_as_running(False, _("Error: Failed to write received file from server {}").format(str(e)))
 						else:
-							self.setStatus("Error: Failed to write received file from server " + str(e))
+							self.setStatus(_("Error: Failed to write received file from server {}").format(str(e)))
 						MESSAGE_LOCK.release()
 						return
 				elif isinstance(msg, bytes):
@@ -371,9 +380,9 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 					return
 			except Exception as e:
 				if self.is_running:
-					self.mark_as_running(False, "Error: Failed to process received file from server " + str(e))
+					self.mark_as_running(False, _("Error: Failed to process received file from server {}").format(str(e)))
 				else:
-					self.setStatus("Error: Failed to process received file from server " + str(e))
+					self.setStatus(_("Error: Failed to process received file from server {}").format(str(e)))
 				MESSAGE_LOCK.release()
 				return
 
@@ -388,36 +397,36 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 						self.loras = message_parsed.get("loras", [])
 						self.samplers = message_parsed.get("samplers", [])
 						self.schedulers = message_parsed.get("schedulers", [])
-						self.setStatus("Status: Processing workflows, models and loras")
+						self.setStatus(_("Status: Processing workflows, models and loras"))
 
 						if (len(self.workflow_contexts) == 0 or len(self.workflow_categories) == 0):
-							self.setStatus("Status: No valid workflows or categories found.")
+							self.setStatus(_("Status: No valid workflows or categories found"))
 							self.setErrored()
 							MESSAGE_LOCK.release()
 							return
 						
 						try:
-							self.setStatus("Status: Ready")
+							self.setStatus(_("Status: Ready"))
 							if threading.current_thread() is threading.main_thread():
 								self.build_ui_base()
 							else:
 								GLib.idle_add(self.build_ui_base)
 						except Exception as e:
-							self.setStatus(f"Status: Error building UI: {e}")
+							self.setStatus(_("Status: Error building UI: {}").format(str(e)))
 							self.setErrored()
 					elif message_parsed["type"] == "ERROR":
 						if self.is_running:
-							self.mark_as_running(False, f"Status: Error received from server \"{message_parsed.get('message', 'Unknown error')}\"")
+							self.mark_as_running(False, _("Status: Error received from server \"{}\"").format(message_parsed.get('message', _('Unknown error'))))
 						else:
-							self.setStatus(f"Status: Error received from server \"{message_parsed.get('message', 'Unknown error')}\"")
+							self.setStatus(_("Status: Error received from server \"{}\"").format(message_parsed.get('message', _('Unknown error'))))
 					elif message_parsed["type"] == "STATUS":
-						self.setStatus(f"Status: {message_parsed.get('message', 'Unknown status')}")
+						self.setStatus(_("Status: {}").format(message_parsed.get('message', _('Unknown status'))))
 					elif message_parsed["type"] == "WORKFLOW_AWAIT":
 						# waiting for the workflow with id, there are "before_this" users before you
-						self.setStatus(f"Status: Waiting for workflow {message_parsed.get('workflow_id', 'unknown')} to start, there are {message_parsed.get('before_this', 0)} users before you.")
+						self.setStatus(_("Status: Waiting for workflow {} to start, there are {} users before you").format(message_parsed.get('workflow_id', _('unknown')), message_parsed.get('before_this', 0)))
 						self.current_run_id = message_parsed.get('id', None)
 					elif message_parsed["type"] == "WORKFLOW_START":
-						self.setStatus(f"Status: Workflow {message_parsed.get('workflow_id', 'unknown')} has started.")
+						self.setStatus(_("Status: Workflow {} has started").format(message_parsed.get('workflow_id', _('unknown'))))
 						self.current_run_id = message_parsed.get('id', None)
 					elif message_parsed["type"] == "FILE":
 						if len(self.next_file) > 0:
@@ -433,9 +442,9 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 								)
 							except Exception as e:
 								if self.is_running:
-									self.mark_as_running(False, "Error: Failed to write received file from server " + str(e))
+									self.mark_as_running(False, _("Error: Failed to write received file from server {}").format(str(e)))
 								else:
-									self.setStatus("Error: Failed to write received file from server " + str(e))
+									self.setStatus(_("Error: Failed to write received file from server {}").format(str(e)))
 								MESSAGE_LOCK.release()
 								return
 						else:
@@ -449,16 +458,16 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 						self.current_run_id = None
 						if self.is_running:
 							if message_parsed["error"]:
-								self.mark_as_running(False, f"Status: Workflow finished with error: {message_parsed.get('error_message', 'No message provided')}")
+								self.mark_as_running(False, _("Status: Workflow finished with error: {}").format(message_parsed.get('error_message', _('No message provided'))))
 							else:
-								self.mark_as_running(False, f"Status: Workflow finished successfully; ready for another run.")
+								self.mark_as_running(False, _("Status: Workflow finished successfully; ready for another run"))
 
 							if self.started_new_project_last_run:
 								self.complete_steps_after_new_empty_project(message_parsed["error"])
 
 					elif message_parsed["type"] == "WORKFLOW_STATUS":
 						if self.is_running:
-							node_name = message_parsed.get("node_name", "unknown")
+							node_name = message_parsed.get("node_name", _("unknown"))
 							progress = message_parsed.get("progress", 0)
 							total = message_parsed.get("total", 1)
 
@@ -471,7 +480,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 								if total.is_integer():
 									total = int(total)
 
-							self.setStatus(f"Status: Running {node_name} ({progress}/{total})")
+							self.setStatus(_("Status: Running {} ({}/{})").format(node_name, progress, total))
 					elif message_parsed["type"] == "SET_CONFIG_VALUE":
 						field = message_parsed.get("field", None)
 						value = message_parsed.get("value", None)
@@ -505,15 +514,15 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 								json.dump(current_config, f, indent=4)
 					else:
 						if self.is_running:
-							self.mark_as_running(False, f"Status: Unknown message type received: {message_parsed['type']}")
+							self.mark_as_running(False, _("Status: Unknown message type received: {}").format(message_parsed['type']))
 						else:
-							self.setStatus(f"Status: Unknown message type received: {message_parsed['type']}")
-						
+							self.setStatus(_("Status: Unknown message type received: {}").format(message_parsed['type']))
+
 			except Exception as e:
 				if self.is_running:
-					self.mark_as_running(False, "Status: Received invalid message from server.")
+					self.mark_as_running(False, _("Status: Received invalid message from server"))
 				else:
-					self.setStatus("Status: Received invalid message from server.")
+					self.setStatus(_("Status: Received invalid message from server"))
 
 			MESSAGE_LOCK.release()
 
@@ -594,26 +603,25 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 			self.image_selector.connect("changed", lambda combo: self.refresh_image_list(False))
 			self.main_box.pack_start(self.image_selector, False, False, 0)
 
-			self.image_selector.set_tooltip_text("Select the image to work with")
+			self.image_selector.set_tooltip_text(_("Select the image to work with"))
 			
 			# lets start with the basics and make a selector for the contexts
 			self.context_selector = Gtk.ComboBoxText()
 			for context in self.workflow_contexts:
-				self.context_selector.append(context, context.capitalize())
+				self.context_selector.append(context, TRANSLATED_CONTEXT[context] if context in TRANSLATED_CONTEXT else context.capitalize())
 			self.main_box.pack_start(self.context_selector, False, False, 0)
 
-			self.context_selector.set_tooltip_text("Select the context that you are working with, normally depends on the type of file you are" + 
-										  " dealing with; in the case of gimp it would be more commonly 'image'")
+			self.context_selector.set_tooltip_text(_("Select the context that you are working with, normally depends on the type of file you are dealing with; in the case of gimp it would be more commonly 'image'"))
 
 			self.category_selector = Gtk.ComboBoxText()
 			self.main_box.pack_start(self.category_selector, False, False, 0)
 
-			self.category_selector.set_tooltip_text("Select the category of the workflow that you want to use, each category brings their own set of workflows")
+			self.category_selector.set_tooltip_text(_("Select the category of the workflow that you want to use, each category brings their own set of workflows"))
 
 			self.workflow_selector = Gtk.ComboBoxText()
 			self.main_box.pack_start(self.workflow_selector, False, False, 0)
 
-			self.workflow_selector.set_tooltip_text("Select the workflow that you want to use, each workflow has their own set of options and parameters")
+			self.workflow_selector.set_tooltip_text(_("Select the workflow that you want to use, each workflow has their own set of options and parameters"))
 
 			# we are also going to make some label text display to display
 			# the description
@@ -623,7 +631,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 			self.description_label.set_wrap_mode(Gtk.WrapMode.WORD)
 			self.description_label.set_size_request(400, -1)
 
-			self.description_label.set_tooltip_text("Description of the selected workflow")
+			self.description_label.set_tooltip_text(_("Description of the selected workflow"))
 
 			css = b"""
 			.textview, textview, textview text, textview view {
@@ -679,8 +687,8 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 					self.project_dialog.close()
 					self.project_dialog = None
 			else:
-				project_name = self.project_file_contents.get("project_name", "Unnamed Project")
-				self.set_title(_("AIHub Tools - Project: ") + project_name)
+				project_name = self.project_file_contents.get("project_name", _("Unnamed Project"))
+				self.set_title(_("AIHub Tools - Project: {}").format(project_name))
 
 				if not hasattr(self, "project_dialog") or self.project_dialog is None:
 					self.project_dialog = ProjectDialog(
@@ -724,7 +732,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 
 				#self.on_category_selected(self.category_selector)
 			except Exception as e:
-				self.setStatus(f"Error: {str(e)}")
+				self.setStatus(_("Error: {}").format(str(e)))
 				self.setErrored()
 
 		def on_category_selected(self, combo):
@@ -826,7 +834,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 
 			#self.on_workflow_selected(self.workflow_selector)
 			except Exception as e:
-				self.setStatus(f"Error: {str(e)}")
+				self.setStatus(_("Error: {}").format(str(e)))
 				self.setErrored()
 
 		def on_model_changed(self, new_model_id):
@@ -852,7 +860,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 					return
 
 				if not workflow or workflow is None or not workflow.get("description", None):
-					self.description_label.get_buffer().set_text("No description available.")
+					self.description_label.get_buffer().set_text(_("No description available"))
 				else:
 					self.description_label.get_buffer().set_text(workflow["description"])
 
@@ -1010,7 +1018,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 					advanced_options_box.set_margin_bottom(12)
 
 					# add a button to toggle advanced options
-					toggle_button = Gtk.Button(label="Show Advanced Options")
+					toggle_button = Gtk.Button(label=_("Show Advanced Options"))
 					toggle_button.connect("clicked", self.on_toggle_advanced_options, advanced_options_box)
 
 					# add some margin top to the button
@@ -1046,16 +1054,16 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 
 				self.on_dialog_focus(None, None)
 			except Exception as e:
-				self.setStatus(f"Error: {str(e)}")
+				self.setStatus(_("Error: {}").format(str(e)))
 				self.setErrored()
 
 		def on_toggle_advanced_options(self, button, advanced_options_box):
 			if advanced_options_box.is_visible():
 				advanced_options_box.hide()
-				button.set_label("Show Advanced Options")
+				button.set_label(_("Show Advanced Options"))
 			else:
 				advanced_options_box.show()
-				button.set_label("Hide Advanced Options")
+				button.set_label(_("Hide Advanced Options"))
 			
 		def on_run_workflow(self, button):
 			if self.errored:
@@ -1080,11 +1088,11 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 				# we are going to show a dialog asking the user to save a file
 				# the dialog should be a native file chooser dialog if possible
 				dialog = Gtk.FileChooserNative(
-					title="Select a file to save the new project at",
+					title=_("Select a file to save the new project at"),
 					action=Gtk.FileChooserAction.SAVE,
 					transient_for=self,
-					accept_label="Create Project",
-					cancel_label="Cancel",
+					accept_label=_("Create Project"),
+					cancel_label=_("Cancel"),
 					#buttons=(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, "Create Project", Gtk.ResponseType.ACCEPT)
 				)
 				dialog.set_modal(True)
@@ -1097,8 +1105,8 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 						return
 					# remove potential extension from the file using os.path
 					project_path = os.path.splitext(project_file)[0]
-					workflow_name = workflow.get("label", "Unknown")
-					self.start_empty_project(workflow.get("project_type", "Unknown"), project_path, workflow_name)
+					workflow_name = workflow.get("label", _("Unknown"))
+					self.start_empty_project(workflow.get("project_type", _("Unknown")), project_path, workflow_name)
 					self.started_new_project_last_run = True
 					dialog.destroy()
 				else:
@@ -1108,7 +1116,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 					return
 			elif workflow_is_init:
 				# we are already within a project, so we are going to create a new timeline within the current project
-				self.branch_project_timeline("Alternative timeline", is_initial=True)
+				self.branch_project_timeline(_("Alternative timeline"), is_initial=True)
 				# while this would make sense, we are commenting it out because it doesn't matter as it is used to refresh
 				# the options for the workflow, which we don't need to do here
 				# self.started_new_timeline_from_init_last_run = True
@@ -1121,7 +1129,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 				# this is to avoid branching the timeline for general workflows that have no project type and are meant to do minor changes
 				# within the current project
 				if project_type is not None and current_project_type == project_type:
-					workflow_name = workflow.get("label", "Unknown")
+					workflow_name = workflow.get("label", _("Unknown"))
 					self.branch_project_timeline(workflow_name, is_initial=False)
 				else:
 					# we are running a workflow that is not related to the current project type
@@ -1145,9 +1153,9 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 							flags=0,
 							message_type=Gtk.MessageType.ERROR,
 							buttons=Gtk.ButtonsType.OK,
-							text="Some input fields are invalid.",
+							text=_("Some input fields are invalid"),
 						)
-						dialog.format_secondary_text("Please check the value for \"" + element.get_ui_label_identifier() + "\" and try again.")
+						dialog.format_secondary_text(_("Please check the value for \"{}\" and try again").format(element.get_ui_label_identifier()))
 						dialog.show()
 						# make the dialog on top of everything
 						dialog.set_keep_above(True)
@@ -1164,7 +1172,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 					self.websocket_relegator = None
 					if (status is False):
 						self.mark_as_running(False)
-						self.setStatus("Error: Failed to upload binary data.")
+						self.setStatus(_("Error: Failed to upload binary data"))
 						return
 					values[element.id] = element.get_value()
 
@@ -1176,7 +1184,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 
 				self.websocket.send(json.dumps(workflow_operation))
 			except Exception as e:
-				self.setStatus(f"Error: {str(e)}")
+				self.setStatus(_("Error: {}").format(str(e)))
 				self.setErrored()
 				return
 
@@ -1195,7 +1203,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 			
 			self.cancel_run_button.set_sensitive(False)
 			#change the label of the cancel button to cancelling
-			self.cancel_run_button.set_label("Cancelling...")
+			self.cancel_run_button.set_label(_("Cancelling..."))
 
 			cancel_operation = {
 				"type": "WORKFLOW_OPERATION",
@@ -1205,7 +1213,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 			try:
 				self.websocket.send(json.dumps(cancel_operation))
 			except Exception as e:
-				self.setStatus(f"Error: {str(e)}")
+				self.setStatus(_("Error: {}").format(str(e)))
 				self.setErrored()
 				return
 		
@@ -1221,20 +1229,21 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 				# make the run button disabled or enabled
 				self.run_button.set_sensitive(not running)
 				self.cancel_run_button.set_sensitive(running)
-				self.cancel_run_button.set_label("Cancel Run")
+				self.cancel_run_button.set_label(_("Cancel Run"))
 
 				for element in self.workflow_elements_all:
 					if element.get_widget():
 						element.get_widget().set_sensitive(not running)
 
-				messageToShow = messageOverride if messageOverride is not None else ("Status: Running workflow..." if running else "Status: Ready")
+				messageToShow = messageOverride if messageOverride is not None else (_("Status: Running workflow...") if running else _("Status: Ready"))
 				self.setStatus(messageToShow)
-				#if not running:
+				if not running:
 					# the reason we force this focus is because the dialog remains static while it is running
 					# and it may had been focused during that phase, so we force it to refocus once it is done
 					# so that the user can see the updated status
 					# disabled seems to cause crashes
-					#self.on_dialog_focus(None, None)
+					Gimp.displays_flush()
+					self.on_dialog_focus(None, None)
 
 				if hasattr(self, "project_dialog") and self.project_dialog is not None and self.project_is_real and not running:
 					self.project_dialog.refresh(self.project_file_contents, self.project_current_timeline_folder)
@@ -1246,18 +1255,18 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 
 		def on_open(self, ws):
 			self.connected = True
-			self.setStatus("Status: Connected to server, waiting for workflows information")
+			self.setStatus(_("Status: Connected to server, waiting for workflows information"))
 
 		def on_close(self, ws, close_status_code, close_msg):
 			if not self.connected:
-				self.setStatus("Error: Could not connect to server " + self.apihost + ":" + str(self.apiport))
+				self.setStatus(_("Error: Could not connect to server {}:{}".format(self.apihost, self.apiport)))
 				self.setErrored()
 				return
-			self.setStatus("Error: Disconnected from server")
+			self.setStatus(_("Error: Disconnected from server"))
 			self.setErrored()
 
 		def on_error(self, ws, error):
-			self.setStatus(f"Error: {str(error)}")
+			self.setStatus(_("Error: {}").format(str(error)))
 			self.setErrored()
 
 		def start_websocket(self):
@@ -1268,7 +1277,12 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 					on_open=self.on_open,
 					on_close=self.on_close,
 					on_error=self.on_error,
-					header={"api-key": self.apikey},
+					header={
+						"api-key": self.apikey,
+						"client": "gimp",
+						# add current locale
+						"locale": locale.getlocale()[0] if locale.getlocale() and locale.getlocale()[0] else "en",
+					},
 				)
 				self.websocket.run_forever(
 					sslopt={"cert_reqs": ssl.CERT_NONE} if self.apiprotocol == "wss" else None,
@@ -1364,7 +1378,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 
 			# make a top bar with a File menu
 			header_bar = Gtk.HeaderBar()
-			header_bar.set_title("AIHub Tools")
+			header_bar.set_title(_("AIHub Tools"))
 			header_bar.set_show_close_button(True)
 			Gtk.Window.set_titlebar(self, header_bar)
 			menu_button = Gtk.MenuButton()
@@ -1372,7 +1386,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 			menu_button.add(menu_image)
 			header_bar.pack_start(menu_button)
 			menu = Gtk.Menu()
-			self.menu_item_open_project = Gtk.MenuItem(label="Open Project")
+			self.menu_item_open_project = Gtk.MenuItem(label=_("Open Project"))
 			self.menu_item_open_project.connect("activate", self.on_menu_open_project)
 			menu.append(self.menu_item_open_project)
 
@@ -1380,17 +1394,17 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 			menu.append(Gtk.SeparatorMenuItem())
 
 			# add a menu entry for settings
-			self.menu_item_settings = Gtk.MenuItem(label="Settings")
+			self.menu_item_settings = Gtk.MenuItem(label=_("Settings"))
 			self.menu_item_settings.connect("activate", self.on_menu_settings)
 			menu.append(self.menu_item_settings)
 
 			# add a menu entry for updating
-			self.menu_item_update = Gtk.MenuItem(label="Check for Updates")
+			self.menu_item_update = Gtk.MenuItem(label=_("Check for Updates"))
 			self.menu_item_update.connect("activate", self.on_menu_update)
 			menu.append(self.menu_item_update)
 
 			# add a menu entry for about
-			self.menu_item_about = Gtk.MenuItem(label="About AIHub")
+			self.menu_item_about = Gtk.MenuItem(label=_("About AIHub"))
 			self.menu_item_about.connect("activate", self.on_menu_about)
 			menu.append(self.menu_item_about)
 
@@ -1424,7 +1438,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 			)
 			self.message_label.get_style_context().add_class("textview")
 
-			self.message_label.set_tooltip_text("Shows the current status of the plugin as it communicates with the server and operates")
+			self.message_label.set_tooltip_text(_("Shows the current status of the plugin as it communicates with the server and operates"))
 
 			message_label_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
 			message_label_box.set_halign(Gtk.Align.START)
@@ -1436,7 +1450,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 			message_label_box.set_margin_bottom(12)
 
 			buffer = self.message_label.get_buffer()
-			buffer.set_text("Status: Connecting to server...")
+			buffer.set_text(_("Status: Connecting to server..."))
 
 			message_label_box.pack_start(self.message_label, False, False, 0)
 			#self.main_box.pack_start(self.message_label, False, False, 0)
@@ -1459,8 +1473,8 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 			button_box.set_hexpand(True)
 			button_box.set_halign(Gtk.Align.END)
 
-			self.run_button = Gtk.Button(label="Run Workflow")
-			self.cancel_run_button = Gtk.Button(label="Cancel Run")
+			self.run_button = Gtk.Button(label=_("Run Workflow"))
+			self.cancel_run_button = Gtk.Button(label=_("Cancel Run"))
 			self.cancel_run_button.connect("clicked", self.on_cancel_run_workflow)
 			self.run_button.connect("clicked", self.on_run_workflow)
 			#align the run button to the right
@@ -1475,8 +1489,8 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 
 			#self.workflow_elements.pack_start(self.run_button, False, False, 0)
 
-			self.run_button.set_tooltip_text("Run the selected workflow with the selected options")
-			self.cancel_run_button.set_tooltip_text("Cancel the running workflow")
+			self.run_button.set_tooltip_text(_("Run the selected workflow with the selected options"))
+			self.cancel_run_button.set_tooltip_text(_("Cancel the running workflow"))
 
 			button_box.set_margin_start(12)
 			button_box.set_margin_end(12)
@@ -1493,7 +1507,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 				self.apiprotocol = config.get("api", "protocol")
 				self.apikey = config.get("api", "apikey")
 
-				self.setStatus(f"Status: Communicating at {self.apiprotocol}://{self.apihost}:{self.apiport}")
+				self.setStatus(_("Status: Communicating at {}://{}:{}".format(self.apiprotocol, self.apihost, self.apiport)))
 
 				last_opened_project = get_aihub_common_property_value("", "", "last_opened_project", None)
 				if last_opened_project:
@@ -1503,7 +1517,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 
 				threading.Thread(target=self.start_websocket, daemon=True).start()
 			except Exception as e:
-				self.setStatus(f"Error: {str(e)}")
+				self.setStatus(_("Error: {}").format(str(e)))
 				self.setErrored()
 
 		def on_menu_settings(self, menu_item):
@@ -1567,18 +1581,18 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 			if self.errored or self.is_running:
 				return
 			aihubprojfilter = Gtk.FileFilter()
-			aihubprojfilter.set_name("AIHub Project Files")
+			aihubprojfilter.set_name(_("AIHub Project Files"))
 			aihubprojfilter.add_pattern("*.aihubproj")
 			allfilter = Gtk.FileFilter()
-			allfilter.set_name("All Files")
+			allfilter.set_name(_("All Files"))
 			allfilter.add_pattern("*")
 
 			dialog = Gtk.FileChooserNative(
-				title="Select a project file to open",
+				title=_("Select a project file to open"),
 				action=Gtk.FileChooserAction.OPEN,
 				transient_for=self,
-				accept_label="Open Project",
-				cancel_label="Cancel",
+				accept_label=_("Open Project"),
+				cancel_label=_("Cancel"),
 				#ensure the file extension is .aihubproj
 			)
 			dialog.add_filter(aihubprojfilter)
@@ -1602,7 +1616,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 			if self.errored or self.is_running:
 				return
 			if not os.path.isfile(project_file_path):
-				self.showErrorDialog("Error", "Project file " + project_file_path + " does not exist.")
+				self.showErrorDialog(_("Error"), _("Project file {} does not exist").format(project_file_path))
 				update_aihub_common_property_value("", "", "last_opened_project", None, None)
 				return
 			
@@ -1611,14 +1625,14 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 			project_folder = os.path.splitext(project_file_path)[0] + "_files"
 
 			if not os.path.isdir(project_folder):
-				self.showErrorDialog("Error", "Project folder " + project_folder + " does not exist.")
+				self.showErrorDialog(_("Error"), _("Project folder {} does not exist").format(project_folder))
 				return
 
 			try:
 				with open(project_file_path, "r") as f:
 					project_absolute_config = json.load(f)
 					if not isinstance(project_absolute_config, dict):
-						raise Exception("Invalid project file format.")
+						raise Exception(_("Invalid project file format"))
 					self.project_folder = project_folder
 					self.project_is_real = True
 					self.project_file = project_file_path
@@ -1629,25 +1643,25 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 					else:
 						self.project_current_timeline_folder = os.path.join(self.project_folder, "timelines", current_timeline_id)
 					if self.project_current_timeline_folder is not None and not os.path.isdir(self.project_current_timeline_folder):
-						raise Exception("Invalid project file format: current timeline folder does not exist.")
+						raise Exception(_("Invalid project file format: current timeline folder does not exist"))
 					self.project_saved_config_json_file = os.path.join(self.project_folder, "saved.json")
 					# Ensure the saved config file exists
 					if not os.path.isfile(self.project_saved_config_json_file):
-						raise Exception("Invalid project file format: saved.json file does not exist.")
+						raise Exception(_("Invalid project file format: saved.json file does not exist"))
 					
 					# check that is is a valid json file
 					with open(self.project_saved_config_json_file, "r") as sf:
 						saved_config = json.load(sf)
 						if not isinstance(saved_config, dict):
-							raise Exception("Invalid saved.json file format.")
+							raise Exception(_("Invalid saved.json file format"))
 
-					self.setStatus(f"Status: Opened project {self.project_file_contents.get('project_name', 'Unknown')}")
+					self.setStatus(_("Status: Opened project {}").format(self.project_file_contents.get('project_name', _('Unknown'))))
 					if hasattr(self, "category_selector") and self.category_selector is not None:
 						self.on_category_selected(self.category_selector)
 					if not quiet:
 						self.on_project_opened()
 			except Exception as e:
-				self.showErrorDialog("Error", f"Failed to open project file: {str(e)}")
+				self.showErrorDialog("Error", _("Failed to open project file: {}").format(str(e)))
 				self.close_project_cleanup_data()
 
 		def close_project_cleanup_data(self):
@@ -1666,7 +1680,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 			if self.is_running:
 				self.on_cancel_run_workflow()
 			self.close_project_cleanup_data()
-			self.setStatus("Status: Closed project")
+			self.setStatus(_("Status: Closed project"))
 			self.on_project_closed()
 
 		def on_change_project_timeline(self, new_timeline_id: str):
@@ -1674,7 +1688,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 				return
 			
 			if not self.project_is_real or self.project_file_contents is None:
-				self.setStatus("Error: No project is currently opened.")
+				self.setStatus(_("Error: No project is currently opened"))
 				return
 			
 			if self.project_file_contents.get("current_timeline", "") == new_timeline_id:
@@ -1709,7 +1723,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 				return
 			
 			if not self.project_is_real or self.project_file_contents is None:
-				self.setStatus("Error: No project is currently opened.")
+				self.setStatus(_("Error: No project is currently opened"))
 				return
 			
 			new_current_timeline = new_project_file_contents["current_timeline"]
@@ -1802,7 +1816,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 					with open(self.project_file, "w") as f:
 						json.dump(self.project_file_contents, f, indent=4)
 				except Exception as e:
-					self.setStatus(f"Error: Failed to update project file: {str(e)}")
+					self.setStatus(_("Error: Failed to update project file: {}").format(str(e)))
 					self.setErrored()
 					return
 
@@ -1819,14 +1833,14 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 						if os.path.isdir(previous_timeline_folder):
 							shutil.copytree(previous_timeline_folder, self.project_current_timeline_folder, dirs_exist_ok=True)
 					except Exception as e:
-						self.setStatus(f"Error: Failed to copy timeline data: {str(e)}")
+						self.setStatus(_("Error: Failed to copy timeline data: {}").format(str(e)))
 						self.setErrored()
 						return
 				
 				if is_initial:
-					self.setStatus(f"Status: Created new alternate timeline '{new_timeline_name}'")
+					self.setStatus(_("Status: Created new alternate timeline '{}'").format(new_timeline_name))
 				else:
-					self.setStatus(f"Status: Branched new timeline '{new_timeline_name}'")
+					self.setStatus(_("Status: Branched new timeline '{}'").format(new_timeline_name))
 
 				for element in self.workflow_elements_all:
 					element.update_project_current_timeline_path_and_saved_path(self.project_current_timeline_folder, self.project_saved_config_json_file)
@@ -1834,7 +1848,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 				if self.is_running:
 					self.started_new_timeline_from_init_last_run = current_timeline_info.get("initial", False)
 			else:
-				self.setStatus("Error: No project is currently opened.")
+				self.setStatus(_("Error: No project is currently opened"))
 				self.setErrored()
 				return
 	

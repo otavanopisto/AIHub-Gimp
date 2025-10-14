@@ -11,6 +11,9 @@ import random
 import json
 import os
 
+import gettext
+_ = gettext.gettext
+
 class AIHubExposeBase:
 	def __init__(self, id, data, workflow_context, workflow_id, workflow, project_current_timeline_path, project_saved_path, apinfo):
 		self.data = None
@@ -196,7 +199,7 @@ class AIHubExposeImage(AIHubExposeBase):
 
 		if (not self.is_using_internal_file()):
 			#first let's build a file selector
-			self.select_button = Gtk.Button(label="Select an image from a file", xalign=0)
+			self.select_button = Gtk.Button(label=_("Select an image from a file"), xalign=0)
 			self.select_button.connect("clicked", self.on_file_chooser_clicked)
 
 			self.select_combo = Gtk.ComboBox()
@@ -225,7 +228,7 @@ class AIHubExposeImage(AIHubExposeBase):
 			):
 				self.selected_filename = self.initial_value["_local_file"]
 
-				self.select_button.set_label(os.path.basename(self.selected_filename) + " (Click to clear)")
+				self.select_button.set_label(os.path.basename(self.selected_filename) + " (" + _("Click to clear") + ")")
 
 			# make a box to have the label and the field
 			self.label = Gtk.Label(self.data["label"], xalign=0)
@@ -456,7 +459,7 @@ class AIHubExposeImage(AIHubExposeBase):
 		if not relegator.wait(10):
 			self.error_label.show()
 			self.success_label.hide()
-			self.error_label.set_text("Error uploading file: Timeout waiting for server response.")
+			self.error_label.set_text(_("Error uploading file: Timeout waiting for server response"))
 			return False
 		
 		response_data = relegator.last_response
@@ -464,7 +467,7 @@ class AIHubExposeImage(AIHubExposeBase):
 		if (response_data["type"] == "ERROR"):
 			self.error_label.show()
 			self.success_label.hide()
-			self.error_label.set_text(f"Error uploading file: {response_data.get('message', 'Unknown error')}")
+			self.error_label.set_text(_("Error uploading file: {}").format(response_data.get('message', _('Unknown error'))))
 		elif (response_data["type"] == "UPLOAD_ACK"):
 			# we can now send the file data
 			self.error_label.hide()
@@ -477,7 +480,7 @@ class AIHubExposeImage(AIHubExposeBase):
 				if not relegator.wait(10):
 					self.error_label.show()
 					self.success_label.hide()
-					self.error_label.set_text("Error uploading file: Timeout waiting for server response after sending file data.")
+					self.error_label.set_text("Error uploading file: Timeout waiting for server response after sending file data")
 					return False
 
 				response_data = relegator.last_response
@@ -485,7 +488,7 @@ class AIHubExposeImage(AIHubExposeBase):
 				if (response_data["type"] == "ERROR"):
 					self.error_label.show()
 					self.success_label.hide()
-					self.error_label.set_text(f"Error uploading file: {response_data.get('message', 'Unknown error')}")
+					self.error_label.set_text(_("Error uploading file: {}").format(response_data.get('message', _('Unknown error'))))
 					return False
 				elif (response_data["type"] == "FILE_UPLOAD_SUCCESS"):
 					filename = response_data.get("file", None)
@@ -494,29 +497,29 @@ class AIHubExposeImage(AIHubExposeBase):
 					if self.uploaded_file_path is None:
 						self.error_label.show()
 						self.success_label.hide()
-						self.error_label.set_text("Error uploading file: No file path returned by server.")
+						self.error_label.set_text("Error uploading file: No file path returned by server")
 						return False
 
 					self.success_label.show()
 					self.error_label.hide()
-					self.success_label.set_text("File uploaded successfully.")
+					self.success_label.set_text("File uploaded successfully")
 
 					# upload successful
 					return True
 				# unexpected response
 				self.error_label.show()
 				self.success_label.hide()
-				self.error_label.set_text(f"Unexpected response from server: {response_data.get('message', 'Unknown error')}")
+				self.error_label.set_text(_("Unexpected response from server: {}").format(response_data.get('message', _('Unknown error'))))
 				return False
 			except Exception as e:
 				self.error_label.show()
 				self.success_label.hide()
-				self.error_label.set_text(f"Error sending file data: {str(e)}")
+				self.error_label.set_text(_("Error sending file data: {}").format(str(e)))
 				return False
 		elif (response_data["type"] == "FILE_UPLOAD_SKIP"):
 			self.error_label.hide()
 			self.success_label.show()
-			self.success_label.set_text("File already exists on server, upload skipped.")
+			self.success_label.set_text(_("File already exists on server, upload skipped"))
 
 			self.uploaded_file_path = upload_file_hash
 			return True
@@ -616,20 +619,20 @@ class AIHubExposeImage(AIHubExposeBase):
 		if (self.selected_filename is not None):
 			# clear the selection
 			self.selected_filename = None
-			self.select_button.set_label("Select an image from a file")
+			self.select_button.set_label(_("Select an image from a file"))
 			self.select_combo.show()
 			self.on_file_selected()
 			return
 		
 		dialog = Gtk.FileChooserDialog(
-			title="Select an image file",
+			title=_("Select an image file"),
 			parent=None,
 			action=Gtk.FileChooserAction.OPEN,
 			buttons=(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, Gtk.STOCK_OPEN, Gtk.ResponseType.OK)
 		)
 		Gtk.Window.set_keep_above(dialog, True)
 		file_filter = Gtk.FileFilter()
-		file_filter.set_name("Image files")
+		file_filter.set_name(_("Image files"))
 		file_filter.add_pattern("*.png")
 		file_filter.add_pattern("*.jpg")
 		file_filter.add_pattern("*.jpeg")
@@ -639,7 +642,7 @@ class AIHubExposeImage(AIHubExposeBase):
 		response = dialog.run()
 		if response == Gtk.ResponseType.OK:
 			filename = dialog.get_filename()
-			self.select_button.set_label(os.path.basename(filename) + " (Click to clear)")
+			self.select_button.set_label(os.path.basename(filename) + " (" + _("Click to clear") + ")")
 			self.selected_filename = filename
 			self.on_file_selected()
 		dialog.destroy()
@@ -790,7 +793,7 @@ class AIHubExposeImage(AIHubExposeBase):
 
 					self.error_label.show()
 					self.success_label.hide()
-					self.error_label.set_text("Failed to load image.")
+					self.error_label.set_text(_("Failed to load image"))
 			elif (self.select_combo.get_active() != -1 and self.select_combo.get_model() is not None):
 				tree_iter = self.select_combo.get_active_iter()
 				if tree_iter is not None:
@@ -877,11 +880,11 @@ class AIHubExposeImage(AIHubExposeBase):
 			if (self.selected_filename is None and self.select_combo.get_active() == -1):
 				self.error_label.show()
 				self.success_label.hide()
-				self.error_label.set_text("Please select a valid image.")
+				self.error_label.set_text(_("Please select a valid image"))
 			elif (self.value_width == 0 or self.value_height == 0):
 				self.error_label.show()
 				self.success_label.hide()
-				self.error_label.set_text("The selected image has no width or height.")
+				self.error_label.set_text(_("The selected image has no width or height"))
 			else:
 				self.success_label.hide()
 				self.error_label.hide()
@@ -889,11 +892,11 @@ class AIHubExposeImage(AIHubExposeBase):
 			if (self.selected_image is None):
 				self.error_label.show()
 				self.success_label.hide()
-				self.error_label.set_text("There is no active image/layer in GIMP.")
+				self.error_label.set_text(_("There is no active image/layer in GIMP"))
 			elif (self.value_width == 0 or self.value_height == 0):
 				self.error_label.show()
 				self.success_label.hide()
-				self.error_label.set_text("The selected image has no width or height.")
+				self.error_label.set_text(_("The selected image has no width or height"))
 			else:
 				self.error_label.hide()
 				self.success_label.hide()
@@ -957,7 +960,7 @@ class AIHubExposeImageBatch(AIHubExposeBase):
 			# straight from the file
 			for i in range(0, len(self.initial_value)):
 				expose = AIHubExposeImage([self.id, i], {
-					"label": f"Image {i+1}",
+					"label": _("Image {}").format(i+1),
 					"type": "upload",
 					"tooltip": self.data["tooltip"] if "tooltip" in self.data else None,
 				}, self.workflow_context, self.workflow_id, self.workflow, self.projectname)
@@ -983,11 +986,11 @@ class AIHubExposeImageBatch(AIHubExposeBase):
 		for i in range(0, len(self.list_of_exposes)):
 			expose = self.list_of_exposes[i]
 			expose.change_id([self.id, i])
-			expose.change_label(f"Image {i+1}")
+			expose.change_label(_("Image {}").format(i+1))
 
 	def on_add_expose(self):
 		new_expose = AIHubExposeImage([self.id, len(self.list_of_exposes)], {
-			"label": f"Image {len(self.list_of_exposes)+1}",
+			"label": _("Image {}").format(len(self.list_of_exposes)+1),
 			"type": "upload",
 			"tooltip": self.data["tooltip"] if "tooltip" in self.data else None,
 		}, self.workflow_context, self.workflow_id, self.workflow, self.projectname)
@@ -1059,10 +1062,12 @@ class AIHubExposeInteger(AIHubExposeBase):
 		max = self.data["max"] if "max" in self.data else None
 		if not isinstance(value, int):
 			self.error_label.show()
-			self.error_label.set_text("Value must be an integer.")
+			self.error_label.set_text(_("Value must be an integer"))
 		elif not (min is None or value >= min) or not (max is None or value <= max):
 			self.error_label.show()
-			self.error_label.set_text(f"Value must be between {min or '-Infinity'} and {max or 'Infinity'}.")
+			smallest_possible_integer = -0x8000000000000000
+			largest_possible_integer = 0x7FFFFFFFFFFFFFFF
+			self.error_label.set_text(_("Value must be between {} and {}").format(min or smallest_possible_integer, max or largest_possible_integer))
 		else:
 			self.error_label.hide()
 
@@ -1111,7 +1116,7 @@ class AIHubExposeSeed(AIHubExposeBase):
 		if "tooltip" in data and data["tooltip"] is not None and data["tooltip"] != "":
 			self.widget_value_fixed.set_tooltip_text(data["tooltip"])
 		else:
-			self.widget_value_fixed.set_tooltip_text("Set a fixed seed value to get the same results every time.")
+			self.widget_value_fixed.set_tooltip_text(_("Set a fixed seed value to get the same results every time"))
 
 		self.widget_value = Gtk.ComboBoxText()
 		self.widget_value.set_entry_text_column(0)
@@ -1183,7 +1188,7 @@ class AIHubExposeSeed(AIHubExposeBase):
 	def check_validity(self, value):
 		if not self.can_run():
 			self.error_label.show()
-			self.error_label.set_text("Value must be a valid object with 'value' as 'random' or 'fixed' and 'value_fixed' as an integer.")
+			self.error_label.set_text(_("Value must be a valid object with 'value' as 'random' or 'fixed' and 'value_fixed' as an integer"))
 		else:
 			self.error_label.hide()
 
@@ -1254,10 +1259,10 @@ class AIHubExposeFloat(AIHubExposeBase):
 		max = self.data["max"] if "max" in self.data else None
 		if not isinstance(value, float):
 			self.error_label.show()
-			self.error_label.set_text("Value must be a float.")
+			self.error_label.set_text("Value must be a float")
 		elif not (min is None or value >= min) or not (max is None or value <= max):
 			self.error_label.show()
-			self.error_label.set_text(f"Value must be between {min or '-Infinity'} and {max or 'Infinity'}.")
+			self.error_label.set_text(_("Value must be between {} and {}").format(min or '-Infinity', max or 'Infinity'))
 		else:
 			self.error_label.hide()
 
@@ -1334,7 +1339,7 @@ class AIHubExposeBoolean(AIHubExposeBase):
 	def check_validity(self, value):
 		if not isinstance(value, bool):
 			self.error_label.show()
-			self.error_label.set_text("Value must be a boolean.")
+			self.error_label.set_text(_("Value must be a boolean"))
 		else:
 			self.error_label.hide()
 
@@ -1416,13 +1421,13 @@ class AIHubExposeString(AIHubExposeBase):
 	def check_validity(self, value):
 		if not isinstance(value, str):
 			self.error_label.show()
-			self.error_label.set_text("Value must be a string.")
+			self.error_label.set_text(_("Value must be a string"))
 		elif len(value) > self.data["maxlen"]:
 			self.error_label.show()
-			self.error_label.set_text(f"Value must be at most {self.data['maxlen']} characters long.")
+			self.error_label.set_text(_("Value must be at most {} characters long").format(self.data['maxlen']))
 		elif len(value) < self.data["minlen"]:
 			self.error_label.show()
-			self.error_label.set_text(f"Value must be at least {self.data['minlen']} characters long.")
+			self.error_label.set_text(_("Value must be at least {} characters long").format(self.data['minlen']))
 		else:
 			self.error_label.hide()
 
@@ -1501,10 +1506,10 @@ class AIHubExposeStringSelection(AIHubExposeBase):
 	def check_validity(self, value):
 		if not isinstance(value, str):
 			self.error_label.show()
-			self.error_label.set_text("Value must be a string.")
+			self.error_label.set_text(_("Value must be a string"))
 		elif value not in self.options:
 			self.error_label.show()
-			self.error_label.set_text(f"Value must be one of the allowed options.")
+			self.error_label.set_text(_("Value must be one of the allowed options"))
 		else:
 			self.error_label.hide()
 
@@ -1625,10 +1630,10 @@ class AIHubExposeLora(AIHubExposeBase):
 		right_box.pack_start(self.slider, True, True, 0)
 
 		self.slider.connect("value-changed", self.on_change_value)
-		self.slider.set_tooltip_text("Set the strength of the LORA model to apply. 0 means no effect, 1 means full effect.")
+		self.slider.set_tooltip_text(_("Set the strength of the LORA model to apply. 0 means no effect, 1 means full effect"))
 
-		self.delete_button = Gtk.Button(label="Remove")
-		self.delete_button.set_tooltip_text("Remove this LORA from the list.")
+		self.delete_button = Gtk.Button(label=_("Remove"))
+		self.delete_button.set_tooltip_text(_("Remove this LORA from the list"))
 		self.delete_button.connect("clicked", self.on_delete)
 		right_box.pack_start(self.delete_button, False, False, 0)
 
@@ -1805,7 +1810,7 @@ class AIHubExposeModel(AIHubExposeBase):
 			self.box.pack_start(self.model_description.get_widget(), False, False, 10)
 
 		if not self.data.get("disable_loras_selection", False):
-			self.loras_label = Gtk.Label("LORAs", xalign=0)
+			self.loras_label = Gtk.Label(_("LORAs"), xalign=0)
 			self.loras_label.set_size_request(400, -1)
 			self.loras_label.set_line_wrap(True)
 			self.box.pack_start(self.loras_label, False, False, 10)
@@ -1827,8 +1832,8 @@ class AIHubExposeModel(AIHubExposeBase):
 			self.loras_box.get_style_context().add_provider(style_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 			self.loras_box.get_style_context().add_class("loras-border")
 
-			self.loras_add_button = Gtk.Button(label="Add LORA")
-			self.loras_add_button.set_tooltip_text("Add a LORA to this model.")
+			self.loras_add_button = Gtk.Button(label=_("Add LORA"))
+			self.loras_add_button.set_tooltip_text(_("Add a LORA to this model"))
 
 			self.loras_add_button.connect("clicked", self.on_add_lora_clicked)
 			self.box.pack_start(self.loras_add_button, False, False, 10)
@@ -1861,7 +1866,7 @@ class AIHubExposeModel(AIHubExposeBase):
 		if "description" in self.model and self.model["description"] is not None and self.model["description"] != "":
 			self.model_description.set_text(self.model['description'])
 		else:
-			self.model_description.set_text("No description provided.")
+			self.model_description.set_text(_("No description provided"))
 
 	def recalculate_loras(self):
 		new_loras = []
@@ -2008,7 +2013,7 @@ class AIHubExposeModel(AIHubExposeBase):
 		_loras = {}
 		enabled_loras_list = []
 		for lora_id, lora_value in self.lorasobjects.items():
-			if lora_value.is_enabled():
+			if lora_value.is_enabled() and lora_value.get_strength() > 0:
 				_loras[lora_id] = lora_value.get_value()
 				enabled_loras_list.append(lora_value)
 
@@ -2038,7 +2043,7 @@ class AIHubExposeModel(AIHubExposeBase):
 		self.model = next((m for m in self.data["filtered_models"] if m["id"] == self.widget.get_active_id()), None)
 		if self.model is None:
 			self.error_label.show()
-			self.error_label.set_text("Selected model is not valid.")
+			self.error_label.set_text(_("Selected model is not valid"))
 			return
 		else:
 			self.error_label.hide()
@@ -2063,16 +2068,16 @@ class AIHubExposeModel(AIHubExposeBase):
 		if self.data.get("disable_model_selection", False):
 			if self.data["model"] is None or not self.data["model"]:
 				self.error_label.show()
-				self.error_label.set_text("The model selection is disabled but no model is set.")
+				self.error_label.set_text(_("The model selection is disabled but no model is set"))
 				return
 			if not self.data["model"] in self.options:
 				self.error_label.show()
-				self.error_label.set_text(f"The model selection is disabled but the set model {self.data['model']} is not available.")
+				self.error_label.set_text(_("The model selection is disabled but the set model {} is not available").format(self.data['model']))
 				return
 
 		if self.model is None:
 			self.error_label.show()
-			self.error_label.set_text("There are no models available for this workflow")
+			self.error_label.set_text(_("There are no models available for this workflow"))
 		else:
 			self.error_label.hide()
 

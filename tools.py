@@ -33,14 +33,6 @@ _ = gettext.gettext
 #sys.stderr = open('err.txt', 'a')
 #sys.stdout = open('log.txt', 'a')
 
-TRANSLATED_CONTEXT = {
-	"image": _("Image"),
-	"video": _("Video"),
-	"audio": _("Audio"),
-	"3d": _("3D"),
-	"text": _("Text"),
-}
-
 PROC_NAME = "AI Hub"
 
 VERSION = None
@@ -607,8 +599,19 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 			
 			# lets start with the basics and make a selector for the contexts
 			self.context_selector = Gtk.ComboBoxText()
+			# due to a bug in gettext, we need to do the translation here
+			# as it does not get the values correctly from the _() function
+			# unless it is here
+			TRANSLATED_CONTEXT = {
+				"image": _("Image"),
+				"video": _("Video"),
+				"audio": _("Audio"),
+				"3d": _("3D"),
+				"text": _("Text"),
+			}
 			for context in self.workflow_contexts:
 				self.context_selector.append(context, TRANSLATED_CONTEXT[context] if context in TRANSLATED_CONTEXT else context.capitalize())
+			# append everything in translated context for testing
 			self.main_box.pack_start(self.context_selector, False, False, 0)
 
 			self.context_selector.set_tooltip_text(_("Select the context that you are working with, normally depends on the type of file you are dealing with; in the case of gimp it would be more commonly 'image'"))

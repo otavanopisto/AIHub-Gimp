@@ -13,6 +13,7 @@ import threading
 from gtkexposes import EXPOSES
 import uuid
 from project import ProjectDialog
+import ssl
 
 import json
 import os
@@ -875,8 +876,15 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 				self.workflow_elements_all = []
 
 				image_url = f"{"http" if self.apiprotocol == "ws" else "https"}://{self.apihost}:{self.apiport}/workflows/{workflow['id']}.png"
+				context = None
+				if self.apiprotocol == "wss":
+					context = ssl._create_unverified_context()
 				try:
-					response = urllib.request.urlopen(image_url)
+					response = None
+					if context is None:
+						response = urllib.request.urlopen(image_url)
+					else:
+						response = urllib.request.urlopen(image_url, context=context)
 					input_stream = Gio.MemoryInputStream.new_from_data(response.read(), None)
 					pixbuf = Pixbuf.new_from_stream(input_stream, None)
 

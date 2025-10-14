@@ -3,6 +3,7 @@ from gi.repository import Gimp, Gtk, GLib, Gdk # type: ignore
 from gi.repository.GdkPixbuf import Pixbuf # type: ignore
 from gi.repository import Gio # type: ignore
 import threading
+from frame_by_frame import FrameByFrameVideoVideoViewer
 
 import sys
 import subprocess
@@ -86,6 +87,14 @@ SUPPORTED_GIMP_OPENABLE_IMAGE_EXTENSIONS = [
     ".gif",
     ".xcf",
     ".webp"
+]
+
+SUPPORTED_VIDEO_EXTENSIONS = [
+    ".mp4",
+    ".avi",
+    ".mkv",
+    ".webm",
+    ".flv"
 ]
 
 def open_file_with_default_app(path):
@@ -430,6 +439,11 @@ class ProjectDialog(Gtk.Dialog):
                             menu_item_import = Gtk.MenuItem(label=_("Import as project XCF image"))
                             menu_item_import.connect("activate", lambda item: self.on_import_file(timeline_file_path))
                             menu.append(menu_item_import)
+
+                        if extension_with_dot in SUPPORTED_VIDEO_EXTENSIONS:
+                            menu_item_extract_frames = Gtk.MenuItem(label=_("Open in Frame by Frame Viewer"))
+                            menu_item_extract_frames.connect("activate", lambda item: self.open_frame_by_frame_viewer(timeline_file_path))
+                            menu.append(menu_item_extract_frames)
 
                         # add a horizontal separator
                         separator = Gtk.SeparatorMenuItem()
@@ -886,6 +900,23 @@ class ProjectDialog(Gtk.Dialog):
                 self.on_import_file(file_path)
 
         dialog.destroy()
+
+    def open_frame_by_frame_viewer(self, video_file_path):
+        if not hasattr(self, 'open_viewers'):
+            self.open_viewers = {}
+        if video_file_path in self.open_viewers:
+            existing_viewer = self.open_viewers[video_file_path]
+            existing_viewer.present()
+            return
+        viewer = FrameByFrameVideoVideoViewer(video_file_path, parent=self)
+        viewer.show_all()
+        viewer.present()
+        viewer.on_close(lambda: self.close_frame_by_frame_viewer(video_file_path, viewer))
+        self.open_viewers[video_file_path] = viewer
+
+    def close_frame_by_frame_viewer(self, video_file_path, viewer):
+        if video_file_path in self.open_viewers:
+            del self.open_viewers[video_file_path]
 
     def on_import_file(self, file_path):
         try:

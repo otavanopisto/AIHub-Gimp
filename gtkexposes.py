@@ -7,6 +7,7 @@ from gi.repository.GdkPixbuf import Pixbuf # type: ignore
 from gi.repository.GdkPixbuf import InterpType # type: ignore
 import hashlib
 import random
+import ssl
 
 import json
 import os
@@ -1640,8 +1641,15 @@ class AIHubExposeLora(AIHubExposeBase):
 	def load_image(self):
 		lora_id = self.data.get("lora", {}).get("id", None)
 		image_url = f"{"https" if self.apinfo["usehttps"] else "http"}://{self.apinfo["host"]}:{self.apinfo["port"]}/loras/{lora_id}.png"
+		context = None
+		if self.apinfo["usehttps"]:
+			context = ssl._create_unverified_context()
 		try:
-			response = urllib.request.urlopen(image_url)
+			response = None
+			if context is None:
+				response = urllib.request.urlopen(image_url)
+			else:
+				response = urllib.request.urlopen(image_url, context=context)
 			input_stream = Gio.MemoryInputStream.new_from_data(response.read(), None)
 			pixbuf = Pixbuf.new_from_stream(input_stream, None)
 
@@ -1848,8 +1856,15 @@ class AIHubExposeModel(AIHubExposeBase):
 		model_id = self.widget.get_active_id()
 
 		image_url = f"{"https" if self.apinfo["usehttps"] else "http"}://{self.apinfo["host"]}:{self.apinfo["port"]}/models/{model_id}.png"
+		context = None
+		if self.apinfo["usehttps"]:
+			context = ssl._create_unverified_context()
 		try:
-			response = urllib.request.urlopen(image_url)
+			response = None
+			if context is None:
+				response = urllib.request.urlopen(image_url)
+			else:
+				response = urllib.request.urlopen(image_url, context=context)
 			input_stream = Gio.MemoryInputStream.new_from_data(response.read(), None)
 			pixbuf = Pixbuf.new_from_stream(input_stream, None)
 

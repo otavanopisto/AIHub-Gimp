@@ -15,6 +15,9 @@ _ = gettext.gettext
 DEFAULT_THUMBNAIL = None
 UNKNOWN_THUMBNAIL = None
 
+import gettext
+_ = gettext.gettext
+
 EXTENSIONS_THUMBNAILS = {
     ".exe": "executable.png",
     ".dll": "executable.png",
@@ -143,13 +146,13 @@ class ProjectDialog(Gtk.Dialog):
         menu_button.add(menu_image)
         header_bar.pack_start(menu_button)
         menu = Gtk.Menu()
-        menu_item_new = Gtk.MenuItem(label="New empty image")
+        menu_item_new = Gtk.MenuItem(label=_("New empty image"))
         menu_item_new.connect("activate", self.on_menu_new_xcf_file)
         menu.append(menu_item_new)
-        menu_item_add = Gtk.MenuItem(label="New image from open images")
+        menu_item_add = Gtk.MenuItem(label=_("New image from open images"))
         menu_item_add.connect("activate", self.on_menu_add_xcf_files)
         menu.append(menu_item_add)
-        menu_item_import = Gtk.MenuItem(label="Import image from file")
+        menu_item_import = Gtk.MenuItem(label=_("Import image from file"))
         menu_item_import.connect("activate", self.on_menu_import_file)
         menu.append(menu_item_import)
 
@@ -197,13 +200,13 @@ class ProjectDialog(Gtk.Dialog):
 
             self.timeline_tree_widget = Gtk.TreeView(model=self.timeline_tree_store)
             renderer = Gtk.CellRendererText()
-            column = Gtk.TreeViewColumn("Timelines", renderer, text=0)
+            column = Gtk.TreeViewColumn(_("Timelines"), renderer, text=0)
             self.timeline_tree_widget.append_column(column)
             self.timeline_tree_widget.set_headers_visible(False)
             self.timeline_tree_widget.set_size_request(200, 300)
             self.timeline_tree_widget.get_selection().set_mode(Gtk.SelectionMode.SINGLE)
             self.timeline_tree_widget.get_selection().connect("changed", self.on_timeline_selection_changed)
-            timelines_label = Gtk.Label(label="Project Timelines:")
+            timelines_label = Gtk.Label(label=_("Project Timelines:"))
             timelines_label.set_margin_top(10)
             timelines_label.set_margin_bottom(10)
             self.internal_box.pack_start(timelines_label, False, False, 0)
@@ -224,13 +227,13 @@ class ProjectDialog(Gtk.Dialog):
                             timeline_in_question = self.project_file_contents.get("timelines", {}).get(timeline_id, None)
                             if timeline_in_question is not None:
                                 menu = Gtk.Menu()
-                                menu_item_rename = Gtk.MenuItem(label="Rename Timeline")
+                                menu_item_rename = Gtk.MenuItem(label=_("Rename Timeline"))
                                 def on_rename_activate(menu_item):
                                     self.rename_timeline(timeline_id)
                                 menu_item_rename.connect("activate", on_rename_activate)
                                 menu.append(menu_item_rename)
 
-                                menu_item_delete = Gtk.MenuItem(label="Delete Timeline")
+                                menu_item_delete = Gtk.MenuItem(label=_("Delete Timeline"))
                                 def on_delete_activate(menu_item):
                                     self.delete_timeline(timeline_id)
                                 menu_item_delete.connect("activate", on_delete_activate)
@@ -324,7 +327,7 @@ class ProjectDialog(Gtk.Dialog):
             timeline_files = [f for f in os.listdir(timeline_files_folder)]
         # then we will create a Gtk FlowBox to show them with thumbnails if available
         if not hasattr(self, 'timeline_file_list_widget'):
-            project_timeline_label = Gtk.Label(label="Timeline Files:")
+            project_timeline_label = Gtk.Label(label=_("Timeline Files:"))
             project_timeline_label.set_margin_top(20)
             project_timeline_label.set_margin_bottom(10)
             #project_timeline_label.set_halign(Gtk.Align.START)
@@ -410,7 +413,7 @@ class ProjectDialog(Gtk.Dialog):
                         self.timeline_file_list_widget.select_child(widget.get_parent())
                         # Right-click detected, show context menu
                         menu = Gtk.Menu()
-                        menu_item_open = Gtk.MenuItem(label="Open File")
+                        menu_item_open = Gtk.MenuItem(label=_("Open File"))
                         menu_item_open.connect("activate", lambda item: open_file_with_default_app(timeline_file_path))
                         menu.append(menu_item_open)
 
@@ -420,11 +423,11 @@ class ProjectDialog(Gtk.Dialog):
                             #menu_item_open_gimp.connect("activate", lambda item: self.open_timeline_file_as_image(timeline_file_path))
                             #menu.append(menu_item_open_gimp)
 
-                            menu_item_overwrite = Gtk.MenuItem(label="Overwrite with Reference Image")
+                            menu_item_overwrite = Gtk.MenuItem(label=_("Overwrite with Reference Image"))
                             menu_item_overwrite.connect("activate", lambda item: self.overwrite_timeline_file_with_reference_image(timeline_file_path))
                             menu.append(menu_item_overwrite)
 
-                            menu_item_import = Gtk.MenuItem(label="Import as project XCF image")
+                            menu_item_import = Gtk.MenuItem(label=_("Import as project XCF image"))
                             menu_item_import.connect("activate", lambda item: self.on_import_file(timeline_file_path))
                             menu.append(menu_item_import)
 
@@ -432,7 +435,7 @@ class ProjectDialog(Gtk.Dialog):
                         separator = Gtk.SeparatorMenuItem()
                         menu.append(separator)
 
-                        menu_item_delete = Gtk.MenuItem(label="Delete File")
+                        menu_item_delete = Gtk.MenuItem(label=_("Delete File"))
                         menu_item_delete.connect("activate", lambda item: self.delete_timeline_file(timeline_file_path))
                         menu.append(menu_item_delete)
 
@@ -459,7 +462,7 @@ class ProjectDialog(Gtk.Dialog):
             return
         # we need to ask for the new name
         # first we must ask for confirmation
-        dialog = Gtk.Dialog(title="Rename Timeline", parent=self, flags=0)
+        dialog = Gtk.Dialog(title=_("Rename Timeline"), parent=self, flags=0)
         dialog.set_keep_above(True)
         dialog.set_default_size(300, 100)
         content_area = dialog.get_content_area()
@@ -467,7 +470,7 @@ class ProjectDialog(Gtk.Dialog):
         content_area.set_border_width(10)
         entry = Gtk.Entry()
         entry.set_text(timeline_in_question.get("name", ""))
-        content_area.pack_start(Gtk.Label(label="New name:"), False, False, 0)
+        content_area.pack_start(Gtk.Label(label=_("New name:")), False, False, 0)
         content_area.pack_start(entry, False, False, 0)
         dialog.add_button(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL)
         dialog.add_button(Gtk.STOCK_OK, Gtk.ResponseType.OK)
@@ -505,8 +508,7 @@ class ProjectDialog(Gtk.Dialog):
             return
         # first we must ask for confirmation
         dialog = Gtk.MessageDialog(parent=self, flags=0, message_type=Gtk.MessageType.QUESTION,
-                                   buttons=Gtk.ButtonsType.YES_NO, text=f"Are you sure you want to delete the timeline {timeline_in_question.get('name', 'unknown')}? " +
-                                   "this action cannot be reversed and will delete any timeline files associated with it")
+                                   buttons=Gtk.ButtonsType.YES_NO, text=_("Are you sure you want to delete the timeline {}? this action cannot be reversed and will delete any timeline files associated with it").format(timeline_in_question.get('name', _('unknown'))))
         dialog.set_keep_above(True)
         response = dialog.run()
         dialog.destroy()
@@ -539,7 +541,7 @@ class ProjectDialog(Gtk.Dialog):
 
     def overwrite_timeline_file_with_reference_image(self, timeline_file):
         # first we set a dialog to select from the currently open images in GIMP
-        dialog = Gtk.Dialog(title="Select Reference Image", parent=self, flags=0)
+        dialog = Gtk.Dialog(title=_("Select Reference Image"), parent=self, flags=0)
         dialog.set_default_size(300, 100)
         content_area = dialog.get_content_area()
         content_area.set_spacing(10)
@@ -552,7 +554,7 @@ class ProjectDialog(Gtk.Dialog):
         combo_box.add_attribute(renderer_pixbuf, "pixbuf", 2)
         combo_box.pack_start(renderer_text, True)
         combo_box.add_attribute(renderer_text, "text", 1)
-        content_area.pack_start(Gtk.Label(label="Select an open image to use as reference:"), False, False, 0)
+        content_area.pack_start(Gtk.Label(label=_("Select an open image to use as reference:")), False, False, 0)
         content_area.pack_start(combo_box, False, False, 0)
         combo_box.set_active(0)
         dialog.add_button(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL)
@@ -567,7 +569,7 @@ class ProjectDialog(Gtk.Dialog):
                 id_of_image = self.image_model[selected_iter][0]
                 gimp_image = Gimp.Image.get_by_id(id_of_image)
                 if gimp_image is None:
-                    raise ValueError("Failed to get the selected image")
+                    raise ValueError(_("Failed to get the selected image"))
                 gfile = Gio.File.new_for_path(timeline_file)
                 Gimp.file_save(Gimp.RunMode.INTERACTIVE, gimp_image, gfile, None)
 
@@ -586,7 +588,7 @@ class ProjectDialog(Gtk.Dialog):
             if opened["file_path"] == timeline_file:
                 # refuse to delete the file if it is open in GIMP
                 error_dialog = Gtk.MessageDialog(parent=self, flags=0, message_type=Gtk.MessageType.ERROR,
-                                                 buttons=Gtk.ButtonsType.OK, text=f"Cannot delete {timeline_file} because it is currently open in GIMP.")
+                                                 buttons=Gtk.ButtonsType.OK, text=_("Cannot delete {} because it is currently open in GIMP.").format(timeline_file))
                 error_dialog.set_keep_above(True)
                 error_dialog.run()
                 error_dialog.destroy()
@@ -594,7 +596,7 @@ class ProjectDialog(Gtk.Dialog):
 
         # make a dialog asking the user to confirm deletion
         dialog = Gtk.MessageDialog(parent=self, flags=0, message_type=Gtk.MessageType.QUESTION,
-                                   buttons=Gtk.ButtonsType.YES_NO, text=f"Are you sure you want to delete {timeline_file}? this action cannot be reversed and may corrupt the timeline")
+                                   buttons=Gtk.ButtonsType.YES_NO, text=_("Are you sure you want to delete {}? this action cannot be reversed and may corrupt the timeline").format(timeline_file))
         dialog.set_keep_above(True)
 
         response = dialog.run()
@@ -626,7 +628,7 @@ class ProjectDialog(Gtk.Dialog):
             if opened["file_path"] == xcf_file:
                 # refuse to delete the file if it is open in GIMP
                 error_dialog = Gtk.MessageDialog(parent=self, flags=0, message_type=Gtk.MessageType.ERROR,
-                                                 buttons=Gtk.ButtonsType.OK, text=f"Cannot delete {xcf_file} because it is currently open in GIMP.")
+                                                 buttons=Gtk.ButtonsType.OK, text=_("Cannot delete {} because it is currently open in GIMP.").format(xcf_file))
                 error_dialog.set_keep_above(True)
                 error_dialog.run()
                 error_dialog.destroy()
@@ -634,7 +636,7 @@ class ProjectDialog(Gtk.Dialog):
 
         # make a dialog asking the user to confirm deletion
         dialog = Gtk.MessageDialog(parent=self, flags=0, message_type=Gtk.MessageType.QUESTION,
-                                   buttons=Gtk.ButtonsType.YES_NO, text=f"Are you sure you want to delete {xcf_file}? this action cannot be reversed")
+                                   buttons=Gtk.ButtonsType.YES_NO, text=_("Are you sure you want to delete {}? this action cannot be reversed").format(xcf_file))
         dialog.set_keep_above(True)
 
         response = dialog.run()
@@ -672,7 +674,7 @@ class ProjectDialog(Gtk.Dialog):
     def on_menu_new_xcf_file(self, menu_item):
         # first we build yet another dialog asking for width and height of the canvas in pixels
         # as well as the name of the file we want to create
-        dialog = Gtk.Dialog(title="New Image", parent=self, flags=0)
+        dialog = Gtk.Dialog(title=_("New Image"), parent=self, flags=0)
         dialog.set_default_size(300, 200)
 
         content_area = dialog.get_content_area()
@@ -688,11 +690,11 @@ class ProjectDialog(Gtk.Dialog):
         width_entry.set_text("1024")
         height_entry.set_text("1024")
 
-        content_area.pack_start(Gtk.Label(label="Width:"), False, False, 0)
+        content_area.pack_start(Gtk.Label(label=_("Width:")), False, False, 0)
         content_area.pack_start(width_entry, False, False, 0)
-        content_area.pack_start(Gtk.Label(label="Height:"), False, False, 0)
+        content_area.pack_start(Gtk.Label(label=_("Height:")), False, False, 0)
         content_area.pack_start(height_entry, False, False, 0)
-        content_area.pack_start(Gtk.Label(label="File Name:"), False, False, 0)
+        content_area.pack_start(Gtk.Label(label=_("File Name:")), False, False, 0)
         content_area.pack_start(file_name_entry, False, False, 0)
 
         dialog.add_button(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL)
@@ -716,17 +718,17 @@ class ProjectDialog(Gtk.Dialog):
                 file_name = file_name_value.strip()
 
                 if not file_name:
-                    raise ValueError("File name cannot be empty")
+                    raise ValueError(_("File name cannot be empty"))
 
                 if not file_name.endswith(".xcf"):
                     file_name = file_name + ".xcf"
 
                 if width <= 0 or height <= 0:
-                    raise ValueError("Invalid width or height")
+                    raise ValueError(_("Invalid width or height"))
                 
                 file_path = os.path.join(self.custom_xcf_file_folder, file_name)
                 if os.path.exists(file_path):
-                    raise ValueError(f"File {file_path} already exists")
+                    raise ValueError(_("File {} already exists").format(file_path))
 
                 # Create a new blank image in GIMP
                 gimp_image = Gimp.Image.new(width, height, Gimp.ImageBaseType.RGB)
@@ -741,7 +743,7 @@ class ProjectDialog(Gtk.Dialog):
                 saved = Gimp.file_save(Gimp.RunMode.NONINTERACTIVE, gimp_image, gfile, None)
 
                 if not saved:
-                    raise ValueError("Failed to create the new image file")
+                    raise ValueError(_("Failed to create the new image file"))
 
                 # delete the gimp_image that we just created
                 # since it has no display it has no problem being deleted
@@ -784,7 +786,7 @@ class ProjectDialog(Gtk.Dialog):
 
         # first we generate a dialog asking the user to confirm adding an image with the ComboBox that uses
         # the image_model to show all currently open images in GIMP
-        dialog = Gtk.Dialog(title="Add Open Image", parent=self, flags=0)
+        dialog = Gtk.Dialog(title=_("Add Open Image"), parent=self, flags=0)
         dialog.set_default_size(300, 100)
         content_area = dialog.get_content_area()
         content_area.set_spacing(10)
@@ -798,7 +800,7 @@ class ProjectDialog(Gtk.Dialog):
         combo_box.add_attribute(renderer_pixbuf, "pixbuf", 2)
         combo_box.pack_start(renderer_text, True)
         combo_box.add_attribute(renderer_text, "text", 1)
-        content_area.pack_start(Gtk.Label(label="Select an open image to add to the project:"), False, False, 0)
+        content_area.pack_start(Gtk.Label(label=_("Select an open image to add to the project:")), False, False, 0)
         content_area.pack_start(combo_box, False, False, 0)
         file_name_entry = Gtk.Entry()
         content_area.pack_start(file_name_entry, False, False, 0)
@@ -818,7 +820,7 @@ class ProjectDialog(Gtk.Dialog):
                 file_name = file_name_value.strip()
 
                 if not file_name:
-                    raise ValueError("File name cannot be empty")
+                    raise ValueError(_("File name cannot be empty"))
 
                 if not file_name.endswith(".xcf"):
                     file_name = file_name + ".xcf"
@@ -853,14 +855,14 @@ class ProjectDialog(Gtk.Dialog):
     def on_menu_import_file(self, menu_item):
         # in this case we use a file chooser dialog to select an image file from disk
         dialog = Gtk.FileChooserNative(
-            title="Import Image File",
+            title=_("Import Image File"),
             action=Gtk.FileChooserAction.OPEN,
             transient_for=self,
-            accept_label="Open",
-            cancel_label="Cancel",
+            accept_label=_("Open"),
+            cancel_label=_("Cancel"),
         )
         imagefilter = Gtk.FileFilter()
-        imagefilter.set_name("Image files")
+        imagefilter.set_name(_("Image files"))
         imagefilter.add_pattern("*.png")
         imagefilter.add_pattern("*.jpg")
         imagefilter.add_pattern("*.jpeg")
@@ -871,7 +873,7 @@ class ProjectDialog(Gtk.Dialog):
         imagefilter.add_pattern("*.webp")
         dialog.add_filter(imagefilter)
         allfilter = Gtk.FileFilter()
-        allfilter.set_name("All files")
+        allfilter.set_name(_("All files"))
         allfilter.add_pattern("*")
         dialog.add_filter(allfilter)
         
@@ -900,7 +902,7 @@ class ProjectDialog(Gtk.Dialog):
             gfile = Gio.File.new_for_path(file_path)
             loaded_image = Gimp.file_load(Gimp.RunMode.INTERACTIVE, gfile)
             if loaded_image is None:
-                raise ValueError("Failed to load the selected image file")
+                raise ValueError(_("Failed to load the selected image file"))
             dest_gfile = Gio.File.new_for_path(dest_path)
             Gimp.file_save(Gimp.RunMode.NONINTERACTIVE, loaded_image, dest_gfile, None)
 
@@ -930,7 +932,7 @@ class ProjectDialog(Gtk.Dialog):
         xcf_files = xcf_files_in_folder if update_specifically is None else [os.path.basename(f) for f in update_specifically]
         # then we will create a Gtk FlowBox to show them with thumbnails if available
         if not hasattr(self, 'xcf_file_list_widget'):
-            project_file_label = Gtk.Label(label="XCF Files in Project:")
+            project_file_label = Gtk.Label(label=_("XCF Files in Project:"))
             project_file_label.set_margin_bottom(10)
             project_file_label.set_margin_top(20)
             #project_file_label.set_halign(Gtk.Align.START)
@@ -1008,7 +1010,7 @@ class ProjectDialog(Gtk.Dialog):
                         # Right-click detected, show context menu
                         menu = Gtk.Menu()
 
-                        open_file_menu_item = Gtk.MenuItem(label="Open XCF File")
+                        open_file_menu_item = Gtk.MenuItem(label=_("Open XCF File"))
                         open_file_menu_item.connect("activate", lambda item: self.open_xcf_file(xcf_file))
                         menu.append(open_file_menu_item)
 
@@ -1016,7 +1018,7 @@ class ProjectDialog(Gtk.Dialog):
                         separator = Gtk.SeparatorMenuItem()
                         menu.append(separator)
 
-                        menu_item_delete = Gtk.MenuItem(label="Delete XCF File")
+                        menu_item_delete = Gtk.MenuItem(label=_("Delete XCF File"))
                         menu_item_delete.connect("activate", lambda item: self.delete_xcf_file(xcf_file))
                         menu.append(menu_item_delete)
                         menu.show_all()
@@ -1059,11 +1061,11 @@ class ProjectDialog(Gtk.Dialog):
         # NOTE, does not work because GIMP does not set the overwrite path correctly
         # left here for reference as the functionality was implemented
         if not os.path.exists(timeline_file_path):
-            raise ValueError(f"File {timeline_file_path} does not exist")
+            raise ValueError(_("File {} does not exist").format(timeline_file_path))
         gfile = Gio.File.new_for_path(timeline_file_path)
         loaded_image = Gimp.file_load(Gimp.RunMode.INTERACTIVE, gfile)
         if loaded_image is None:
-            raise ValueError(f"Failed to load the image file {timeline_file_path}")
+            raise ValueError(_("Failed to load the image file {}").format(timeline_file_path))
         display = Gimp.Display.new(loaded_image)
         self.images_opened.append({
             "image": loaded_image,
@@ -1074,11 +1076,11 @@ class ProjectDialog(Gtk.Dialog):
     
     def open_xcf_file(self, xcf_file_path):
         if not os.path.exists(xcf_file_path):
-            raise ValueError(f"File {xcf_file_path} does not exist")
+            raise ValueError(_("File {} does not exist").format(xcf_file_path))
         gfile = Gio.File.new_for_path(xcf_file_path)
         loaded_image = Gimp.file_load(Gimp.RunMode.NONINTERACTIVE, gfile)
         if loaded_image is None:
-            raise ValueError(f"Failed to load the image file {xcf_file_path}")
+            raise ValueError(_("Failed to load the image file {}").format(xcf_file_path))
         display = Gimp.Display.new(loaded_image)
         self.images_opened.append({
             "image": loaded_image,
@@ -1147,7 +1149,7 @@ class ProjectDialog(Gtk.Dialog):
                     flags=0,
                     message_type=Gtk.MessageType.QUESTION,
                     buttons=Gtk.ButtonsType.NONE,
-                    text=f"The image '{image.get_name()}' has unsaved changes. Do you want to save them before closing?",
+                    text=_("The image '{}' has unsaved changes. Do you want to save them before closing?").format(image.get_name()),
                 )
                 dialog.add_button(Gtk.STOCK_YES, Gtk.ResponseType.YES)
                 dialog.add_button(Gtk.STOCK_DISCARD, Gtk.ResponseType.NO)

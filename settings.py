@@ -4,9 +4,12 @@ import os
 
 from workspace import ensure_aihub_folder, update_aihub_config
 
+import gettext
+_ = gettext.gettext
+
 class SettingsDialog(Gtk.Dialog):
     def __init__(self, parent):
-        super().__init__(title="Gimp AIHub Settings", parent=parent, flags=0)
+        super().__init__(title=_("Gimp AIHub Settings"), parent=parent, flags=0)
         self.set_default_size(400, 300)
 
         self.set_keep_above(True)
@@ -29,15 +32,15 @@ class SettingsDialog(Gtk.Dialog):
         self.apikey_entry.set_text(self.config.get("api", "apikey", fallback=""))
 
         host_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-        host_box.pack_start(Gtk.Label(label="Host:"), False, False, 0)
+        host_box.pack_start(Gtk.Label(label=_("Host:")), False, False, 0)
         host_box.pack_start(self.host_entry, True, True, 0)
 
         port_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-        port_box.pack_start(Gtk.Label(label="Port:"), False, False, 0)
+        port_box.pack_start(Gtk.Label(label=_("Port:")), False, False, 0)
         port_box.pack_start(self.port_entry, True, True, 0)
 
         apikey_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-        apikey_box.pack_start(Gtk.Label(label="API Key:"), False, False, 0)
+        apikey_box.pack_start(Gtk.Label(label=_("API Key:")), False, False, 0)
         apikey_box.pack_start(self.apikey_entry, True, True, 0)
 
         content_box.pack_start(host_box, False, False, 0)
@@ -67,10 +70,10 @@ class SettingsDialog(Gtk.Dialog):
                 flags=0,
                 message_type=Gtk.MessageType.INFO,
                 buttons=Gtk.ButtonsType.OK,
-                text="Settings saved",
+                text=_("Settings saved"),
             )
             info_dialog.set_keep_above(True)
-            info_dialog.format_secondary_text("Settings have been saved. Please restart GIMP AIHub to apply the new settings.")
+            info_dialog.format_secondary_text(_("Settings have been saved. Please restart GIMP AIHub to apply the new settings."))
             info_dialog.run()
 
     def on_close(self, callback):

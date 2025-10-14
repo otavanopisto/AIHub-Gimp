@@ -1259,7 +1259,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 
 		def on_close(self, ws, close_status_code, close_msg):
 			if not self.connected:
-				self.setStatus(_("Error: Could not connect to server {}:{}".format(self.apihost, self.apiport)))
+				self.setStatus(_("Error: Could not connect to server {}:{}").format(self.apihost, self.apiport))
 				self.setErrored()
 				return
 			self.setStatus(_("Error: Disconnected from server"))
@@ -1507,7 +1507,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 				self.apiprotocol = config.get("api", "protocol")
 				self.apikey = config.get("api", "apikey")
 
-				self.setStatus(_("Status: Communicating at {}://{}:{}".format(self.apiprotocol, self.apihost, self.apiport)))
+				self.setStatus(_("Status: Communicating at {}://{}:{}").format(self.apiprotocol, self.apihost, self.apiport))
 
 				last_opened_project = get_aihub_common_property_value("", "", "last_opened_project", None)
 				if last_opened_project:

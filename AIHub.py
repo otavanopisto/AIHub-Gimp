@@ -8,13 +8,17 @@ gi.require_version('Gimp', '3.0')
 gi.require_version('GimpUi', '3.0')
 gi.require_version('Gtk', '3.0')
 
+from os import path
+
 from tools import runToolsProcedure
 
 from gi.repository import Gimp #type: ignore
 
 import gettext
 _ = gettext.gettext
-#textdomain = "gimp30-python"
+LOCALE_DIR = path.join(path.dirname(__file__), "locale")
+gettext.bindtextdomain("AIHub", LOCALE_DIR)
+gettext.textdomain("AIHub")
 
 class AiHub(Gimp.PlugIn):
 	#def do_set_i18n(self, name):

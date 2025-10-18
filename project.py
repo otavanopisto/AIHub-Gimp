@@ -4,6 +4,7 @@ from gi.repository.GdkPixbuf import Pixbuf # type: ignore
 from gi.repository import Gio # type: ignore
 import threading
 from frame_by_frame import FrameByFrameVideoVideoViewer
+from shutil import copyfile
 
 import sys
 import subprocess
@@ -128,10 +129,10 @@ class ProjectDialog(Gtk.Dialog):
 
         self.images_opened = []
 
-        self.custom_xcf_file_folder = os.path.join(self.project_folder, "xcf_files")
+        self.custom_project_file_folder = os.path.join(self.project_folder, "project_files")
 
-        if not os.path.exists(self.custom_xcf_file_folder):
-            os.makedirs(self.custom_xcf_file_folder)
+        if not os.path.exists(self.custom_project_file_folder):
+            os.makedirs(self.custom_project_file_folder)
 
         self.main_box = self.get_content_area()
         self.main_box.set_spacing(10)
@@ -175,7 +176,7 @@ class ProjectDialog(Gtk.Dialog):
 
         # Add more widgets to display and edit project data as needed
         self.rebuild_timeline_ui()
-        self.update_xcf_file_list()
+        self.update_project_file_list()
         self.show_all()
 
     def refresh(self, new_project_file_contents, new_project_current_timeline_folder):
@@ -333,7 +334,7 @@ class ProjectDialog(Gtk.Dialog):
         timeline_files_folder = os.path.join(self.project_current_timeline_folder, "files")
         timeline_files = []
         if os.path.exists(timeline_files_folder) and os.path.isdir(timeline_files_folder):
-            timeline_files = [f for f in os.listdir(timeline_files_folder)]
+            timeline_files = [f for f in os.listdir(timeline_files_folder) if os.path.isfile(os.path.join(timeline_files_folder, f)) and not f.endswith("_thumbnail.png")]
         # then we will create a Gtk FlowBox to show them with thumbnails if available
         if not hasattr(self, 'timeline_file_list_widget'):
             project_timeline_label = Gtk.Label(label=_("Timeline Files:"))
@@ -376,6 +377,9 @@ class ProjectDialog(Gtk.Dialog):
             extension_with_dot = os.path.splitext(timeline_file)[1].lower()
             if extension_with_dot in SUPPORTED_IMAGE_EXTENSIONS:
                 thumbnail_path = os.path.join(timeline_files_folder, timeline_file)
+                thumbnail = Pixbuf.new_from_file_at_scale(thumbnail_path, 100, 100, True)
+            elif os.path.exists(os.path.join(timeline_files_folder, os.path.splitext(timeline_file)[0] + "_thumbnail.png")):
+                thumbnail_path = os.path.join(timeline_files_folder, os.path.splitext(timeline_file)[0] + "_thumbnail.png")
                 thumbnail = Pixbuf.new_from_file_at_scale(thumbnail_path, 100, 100, True)
             elif extension_with_dot in EXTENSIONS_THUMBNAILS_CACHE:
                 thumbnail = EXTENSIONS_THUMBNAILS_CACHE[extension_with_dot]
@@ -444,6 +448,10 @@ class ProjectDialog(Gtk.Dialog):
                             menu_item_extract_frames = Gtk.MenuItem(label=_("Open in Frame by Frame Viewer"))
                             menu_item_extract_frames.connect("activate", lambda item: self.open_frame_by_frame_viewer(timeline_file_path))
                             menu.append(menu_item_extract_frames)
+
+                        menu_item_add_to_project = Gtk.MenuItem(label=_("Add to Project Files"))
+                        menu_item_add_to_project.connect("activate", lambda item: self.add_timeline_file_to_project(timeline_file_path))
+                        menu.append(menu_item_add_to_project)
 
                         # add a horizontal separator
                         separator = Gtk.SeparatorMenuItem()
@@ -620,8 +628,10 @@ class ProjectDialog(Gtk.Dialog):
             return
         
         try:
-            # send it to the recycling bin or whatever the OS uses
             os.remove(timeline_file)
+            thumbnail_path = os.path.splitext(timeline_file)[0] + "_thumbnail.png"
+            if os.path.exists(thumbnail_path):
+                os.remove(thumbnail_path)
             
             for i, existing_file_element in enumerate(self.timeline_file_list_widget.get_children()):
                 existing_label = existing_file_element.get_child().get_child().get_children()[1]
@@ -636,13 +646,86 @@ class ProjectDialog(Gtk.Dialog):
             error_dialog.run()
             error_dialog.destroy()
 
-    def delete_xcf_file(self, xcf_file):
+    def rename_project_file(self, project_file):
+        # before doing this check if the file is open in GIMP
+        for opened in self.images_opened:
+            if opened["file_path"] == project_file:
+                # refuse to rename the file if it is open in GIMP
+                error_dialog = Gtk.MessageDialog(parent=self, flags=0, message_type=Gtk.MessageType.ERROR,
+                                                 buttons=Gtk.ButtonsType.OK, text=_("Cannot rename {} because it is currently open in GIMP.").format(project_file))
+                error_dialog.set_keep_above(True)
+                error_dialog.run()
+                error_dialog.destroy()
+                return
+
+        # create a dialog to ask for the new name
+        dialog = Gtk.Dialog(title=_("Rename Project File"), parent=self, flags=0)
+        dialog.set_default_size(300, 100)
+        content_area = dialog.get_content_area()
+        content_area.set_spacing(10)
+        content_area.set_border_width(10)
+        entry = Gtk.Entry()
+        entry.set_text(os.path.splitext(os.path.basename(project_file))[0])
+        content_area.pack_start(Gtk.Label(label=_("New name:")), False, False, 0)
+        content_area.pack_start(entry, False, False, 0)
+        dialog.add_button(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL)
+        dialog.add_button(Gtk.STOCK_OK, Gtk.ResponseType.OK)
+        dialog.set_keep_above(True)
+        dialog.set_modal(True)
+        dialog.show_all()
+
+        extension_with_dot = os.path.splitext(project_file)[1]
+
+        response = dialog.run()
+        if response == Gtk.ResponseType.OK:
+            new_name = entry.get_text().strip() + extension_with_dot
+            if new_name != "":
+                new_path = os.path.join(self.custom_project_file_folder, new_name)
+                if new_path != project_file:
+                    if os.path.exists(new_path):
+                        error_dialog = Gtk.MessageDialog(parent=self, flags=0, message_type=Gtk.MessageType.ERROR,
+                                                         buttons=Gtk.ButtonsType.OK, text=_("File {} already exists").format(new_path))
+                        error_dialog.set_keep_above(True)
+                        error_dialog.run()
+                        error_dialog.destroy()
+                    else:
+                        try:
+                            os.rename(project_file, new_path)
+                            # also rename the thumbnail if it exists
+                            old_thumbnail_path = os.path.splitext(project_file)[0] + "_thumbnail.png"
+                            if os.path.exists(old_thumbnail_path):
+                                new_thumbnail_path = os.path.splitext(new_path)[0] + "_thumbnail.png"
+                                os.rename(old_thumbnail_path, new_thumbnail_path)
+
+                            # update the project file list UI
+                            for existing_file_element in self.project_files_list_widget.get_children():
+                                existing_label = existing_file_element.get_child().get_child().get_children()[1]
+                                if os.path.basename(project_file) == existing_label.get_text():
+                                    existing_label.set_text(new_name)
+                                    break
+
+                        except Exception as e:
+                            error_dialog = Gtk.MessageDialog(parent=self, flags=0, message_type=Gtk.MessageType.ERROR,
+                                                             buttons=Gtk.ButtonsType.OK, text=str(e))
+                            error_dialog.set_keep_above(True)
+                            error_dialog.run()
+                            error_dialog.destroy()
+            else:
+                error_dialog = Gtk.MessageDialog(parent=self, flags=0, message_type=Gtk.MessageType.ERROR,
+                                                 buttons=Gtk.ButtonsType.OK, text=_("File name cannot be empty"))
+                error_dialog.set_keep_above(True)
+                error_dialog.run()
+                error_dialog.destroy()
+
+        dialog.destroy()
+
+    def delete_project_file(self, project_file):
         # first let's check if the file is open in GIMP
         for opened in self.images_opened:
-            if opened["file_path"] == xcf_file:
+            if opened["file_path"] == project_file:
                 # refuse to delete the file if it is open in GIMP
                 error_dialog = Gtk.MessageDialog(parent=self, flags=0, message_type=Gtk.MessageType.ERROR,
-                                                 buttons=Gtk.ButtonsType.OK, text=_("Cannot delete {} because it is currently open in GIMP.").format(xcf_file))
+                                                 buttons=Gtk.ButtonsType.OK, text=_("Cannot delete {} because it is currently open in GIMP.").format(project_file))
                 error_dialog.set_keep_above(True)
                 error_dialog.run()
                 error_dialog.destroy()
@@ -650,7 +733,7 @@ class ProjectDialog(Gtk.Dialog):
 
         # make a dialog asking the user to confirm deletion
         dialog = Gtk.MessageDialog(parent=self, flags=0, message_type=Gtk.MessageType.QUESTION,
-                                   buttons=Gtk.ButtonsType.YES_NO, text=_("Are you sure you want to delete {}? this action cannot be reversed").format(xcf_file))
+                                   buttons=Gtk.ButtonsType.YES_NO, text=_("Are you sure you want to delete {}? this action cannot be reversed").format(project_file))
         dialog.set_keep_above(True)
 
         response = dialog.run()
@@ -661,15 +744,15 @@ class ProjectDialog(Gtk.Dialog):
 
         try:
             # send it to the recycling bin or whatever the OS uses
-            os.remove(xcf_file)
-            thumbnail_path = os.path.splitext(xcf_file)[0] + "_thumbnail.png"
+            os.remove(project_file)
+            thumbnail_path = os.path.splitext(project_file)[0] + "_thumbnail.png"
             if os.path.exists(thumbnail_path):
                 os.remove(thumbnail_path)
             
-            for i, existing_file_element in enumerate(self.xcf_file_list_widget.get_children()):
+            for i, existing_file_element in enumerate(self.project_files_list_widget.get_children()):
                 existing_label = existing_file_element.get_child().get_child().get_children()[1]
-                if os.path.basename(xcf_file) == existing_label.get_text():
-                    self.xcf_file_list_widget.remove(existing_file_element)
+                if os.path.basename(project_file) == existing_label.get_text():
+                    self.project_files_list_widget.remove(existing_file_element)
                     break
 
         except Exception as e:
@@ -740,7 +823,7 @@ class ProjectDialog(Gtk.Dialog):
                 if width <= 0 or height <= 0:
                     raise ValueError(_("Invalid width or height"))
                 
-                file_path = os.path.join(self.custom_xcf_file_folder, file_name)
+                file_path = os.path.join(self.custom_project_file_folder, file_name)
                 if os.path.exists(file_path):
                     raise ValueError(_("File {} already exists").format(file_path))
 
@@ -776,7 +859,7 @@ class ProjectDialog(Gtk.Dialog):
                 self.generate_preview_thumbnail_image(loaded_image)
 
                 # Update the project timeline with the new XCF file
-                self.update_xcf_file_list()
+                self.update_project_file_list()
             except ValueError as e:
                 error_dialog = Gtk.MessageDialog(parent=self, flags=0, message_type=Gtk.MessageType.ERROR,
                                                  buttons=Gtk.ButtonsType.OK, text=str(e))
@@ -839,7 +922,7 @@ class ProjectDialog(Gtk.Dialog):
                 if not file_name.endswith(".xcf"):
                     file_name = file_name + ".xcf"
 
-                file_path = os.path.join(self.custom_xcf_file_folder, file_name)
+                file_path = os.path.join(self.custom_project_file_folder, file_name)
 
                 id_of_image = self.image_model[selected_iter][0]
                 gimp_image = Gimp.Image.get_by_id(id_of_image)
@@ -857,7 +940,7 @@ class ProjectDialog(Gtk.Dialog):
                     "xcf": True,
                 })
                 self.generate_preview_thumbnail_image(loaded_image)
-                self.update_xcf_file_list([file_path])
+                self.update_project_file_list([file_path])
             except ValueError as e:
                 error_dialog = Gtk.MessageDialog(parent=self, flags=0, message_type=Gtk.MessageType.ERROR,
                                                  buttons=Gtk.ButtonsType.OK, text=str(e))
@@ -918,6 +1001,26 @@ class ProjectDialog(Gtk.Dialog):
         if video_file_path in self.open_viewers:
             del self.open_viewers[video_file_path]
 
+    def add_timeline_file_to_project(self, timeline_file):
+        try:
+            file_name = os.path.basename(timeline_file)
+            dest_path = os.path.join(self.custom_project_file_folder, file_name)
+            n = 2
+            while os.path.exists(dest_path):
+                dest_path = os.path.join(self.custom_project_file_folder, f"{os.path.splitext(file_name)[0]}_{n}{os.path.splitext(file_name)[1]}")
+                n += 1
+            copyfile(timeline_file, dest_path)
+            thumbnail_path = os.path.splitext(timeline_file)[0] + "_thumbnail.png"
+            if os.path.exists(thumbnail_path):
+                copyfile(thumbnail_path, os.path.splitext(dest_path)[0] + "_thumbnail.png")
+            self.update_project_file_list([dest_path])
+        except Exception as e:
+            error_dialog = Gtk.MessageDialog(parent=self, flags=0, message_type=Gtk.MessageType.ERROR,
+                                             buttons=Gtk.ButtonsType.OK, text=str(e))
+            error_dialog.set_keep_above(True)
+            error_dialog.run()
+            error_dialog.destroy()
+
     def on_import_file(self, file_path):
         try:
             file_name = os.path.basename(file_path)
@@ -925,10 +1028,10 @@ class ProjectDialog(Gtk.Dialog):
             file_name = os.path.splitext(file_name)[0]
             filename_base = file_name
             file_name = file_name + ".xcf"
-            dest_path = os.path.join(self.custom_xcf_file_folder, file_name)
-            n = 1
+            dest_path = os.path.join(self.custom_project_file_folder, file_name)
+            n = 2
             while os.path.exists(dest_path):
-                dest_path = os.path.join(self.custom_xcf_file_folder, f"{filename_base}_{n}.xcf")
+                dest_path = os.path.join(self.custom_project_file_folder, f"{filename_base}_{n}.xcf")
                 n += 1
             gfile = Gio.File.new_for_path(file_path)
             loaded_image = Gimp.file_load(Gimp.RunMode.INTERACTIVE, gfile)
@@ -949,7 +1052,7 @@ class ProjectDialog(Gtk.Dialog):
                 "xcf": True,
             })
             self.generate_preview_thumbnail_image(loaded_image_final)
-            self.update_xcf_file_list([dest_path])
+            self.update_project_file_list([dest_path])
         except ValueError as e:
             error_dialog = Gtk.MessageDialog(parent=self, flags=0, message_type=Gtk.MessageType.ERROR,
                                                      buttons=Gtk.ButtonsType.OK, text=str(e))
@@ -957,13 +1060,13 @@ class ProjectDialog(Gtk.Dialog):
             error_dialog.run()
             error_dialog.destroy()
 
-    def update_xcf_file_list(self, update_specifically=None):
-        # first we are going to list all xcf files in the custom xcf file folder
-        xcf_files_in_folder = [f for f in os.listdir(self.custom_xcf_file_folder) if f.endswith(".xcf")]
-        xcf_files = xcf_files_in_folder if update_specifically is None else [os.path.basename(f) for f in update_specifically]
+    def update_project_file_list(self, update_specifically=None):
+        # first we are going to list all project files in the custom project file folder
+        project_files_in_folder = [f for f in os.listdir(self.custom_project_file_folder) if os.path.isfile(os.path.join(self.custom_project_file_folder, f)) and not f.endswith("_thumbnail.png")]
+        project_files = project_files_in_folder if update_specifically is None else [os.path.basename(f) for f in update_specifically]
         # then we will create a Gtk FlowBox to show them with thumbnails if available
-        if not hasattr(self, 'xcf_file_list_widget'):
-            project_file_label = Gtk.Label(label=_("XCF Files in Project:"))
+        if not hasattr(self, 'project_files_list_widget'):
+            project_file_label = Gtk.Label(label=_("Project Files:"))
             project_file_label.set_margin_bottom(10)
             project_file_label.set_margin_top(20)
             #project_file_label.set_halign(Gtk.Align.START)
@@ -971,38 +1074,49 @@ class ProjectDialog(Gtk.Dialog):
             self.internal_box.pack_start(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 0)
             self.internal_box.pack_start(project_file_label, False, False, 0)
 
-            self.xcf_file_list_widget = Gtk.FlowBox()
+            self.project_files_list_widget = Gtk.FlowBox()
             #ensure max width is only 600 pixels
-            self.xcf_file_list_widget.set_column_spacing(10)
-            self.xcf_file_list_widget.set_row_spacing(10)
+            self.project_files_list_widget.set_column_spacing(10)
+            self.project_files_list_widget.set_row_spacing(10)
 
-            self.internal_box.pack_start(self.xcf_file_list_widget, True, True, 0)
-            xcf_files = xcf_files_in_folder
-        
-        global DEFAULT_THUMBNAIL
-        if DEFAULT_THUMBNAIL is None:
-            # create an icon pixbuf for the default thumbnail
-            DEFAULT_THUMBNAIL = Pixbuf.new_from_file_at_scale(
+            self.internal_box.pack_start(self.project_files_list_widget, True, True, 0)
+            project_files = project_files_in_folder
+
+        global SUPPORTED_IMAGE_EXTENSIONS
+        global EXTENSIONS_THUMBNAILS
+        global EXTENSIONS_THUMBNAILS_CACHE
+        global UNKNOWN_THUMBNAIL
+        if UNKNOWN_THUMBNAIL is None:
+            # create an icon pixbuf for the unknown thumbnail
+            UNKNOWN_THUMBNAIL = Pixbuf.new_from_file_at_scale(
                 os.path.join(
                     os.path.dirname(os.path.abspath(__file__)),
                     "icons",
-                    "gimp.png"
+                    "unknown.png"
                 ),
                 100,
                 100,
                 True
             )
-        
-        for xcf_file in xcf_files:
-            thumbnail_path = os.path.splitext(os.path.join(self.custom_xcf_file_folder, xcf_file))[0] + "_thumbnail.png"
-            thumbnail = DEFAULT_THUMBNAIL
-            if os.path.exists(thumbnail_path):
+        for project_file in project_files:
+            thumbnail_path = os.path.splitext(os.path.join(self.custom_project_file_folder, project_file))[0] + "_thumbnail.png"
+            thumbnail = UNKNOWN_THUMBNAIL
+            extension_with_dot = os.path.splitext(project_file)[1].lower()
+            if extension_with_dot in SUPPORTED_IMAGE_EXTENSIONS:
+                thumbnail = Pixbuf.new_from_file_at_scale(os.path.join(self.custom_project_file_folder, project_file), 100, 100, True)
+            elif os.path.exists(thumbnail_path):
                 thumbnail = Pixbuf.new_from_file_at_scale(thumbnail_path, 100, 100, True)
+            elif extension_with_dot in EXTENSIONS_THUMBNAILS_CACHE:
+                thumbnail = EXTENSIONS_THUMBNAILS_CACHE[extension_with_dot]
+            elif extension_with_dot in EXTENSIONS_THUMBNAILS:
+                thumbnail = Pixbuf.new_from_file_at_scale(EXTENSIONS_THUMBNAILS[extension_with_dot], 100, 100, True)
+                EXTENSIONS_THUMBNAILS_CACHE[extension_with_dot] = thumbnail
+                
             # first let's see if we already have this file in the list box
             existing_file_element = None
-            for file_element in self.xcf_file_list_widget.get_children():
+            for file_element in self.project_files_list_widget.get_children():
                 label = file_element.get_child().get_child().get_children()[1]
-                if label.get_text() == xcf_file:
+                if label.get_text() == project_file:
                     existing_file_element = file_element
                     break
             if existing_file_element is not None:
@@ -1018,46 +1132,97 @@ class ProjectDialog(Gtk.Dialog):
                 new_file_element.set_margin_start(10)
                 new_file_element.set_margin_end(10)
                 new_file_element.pack_start(Gtk.Image.new_from_pixbuf(thumbnail), False, False, 0)
-                new_file_element.pack_start(Gtk.Label(label=xcf_file), False, False, 0)
+                new_file_element.pack_start(Gtk.Label(label=project_file), False, False, 0)
                 new_file_element_event_box.add(new_file_element)
 
                 inserted = False
-                for i, existing_file_element in enumerate(self.xcf_file_list_widget.get_children()):
+                for i, existing_file_element in enumerate(self.project_files_list_widget.get_children()):
                     existing_label = existing_file_element.get_child().get_child().get_children()[1]
-                    if xcf_file < existing_label.get_text():
-                        self.xcf_file_list_widget.insert(new_file_element_event_box, i)
+                    if project_file < existing_label.get_text():
+                        self.project_files_list_widget.insert(new_file_element_event_box, i)
                         inserted = True
                         break
                 if not inserted:
-                    self.xcf_file_list_widget.add(new_file_element_event_box)
+                    self.project_files_list_widget.add(new_file_element_event_box)
 
-                # add an event on double click to open the xcf file in GIMP
-                def on_xcf_file_double_click(widget, event, xcf_file=os.path.join(self.custom_xcf_file_folder, xcf_file)):
-                    if event.type == Gdk.EventType._2BUTTON_PRESS and event.button == Gdk.BUTTON_PRIMARY:
-                        self.open_xcf_file(xcf_file)
-                    elif event.type == Gdk.EventType.BUTTON_PRESS and event.button == Gdk.BUTTON_SECONDARY:
-                        # set the flowbox selection to this item
-                        self.xcf_file_list_widget.select_child(widget.get_parent())
-                        # Right-click detected, show context menu
-                        menu = Gtk.Menu()
+                if project_file.endswith(".xcf"):
+                    # add an event on double click to open the xcf file in GIMP
+                    def on_xcf_file_double_click(widget, event, xcf_file=os.path.join(self.custom_project_file_folder, project_file)):
+                        if event.type == Gdk.EventType._2BUTTON_PRESS and event.button == Gdk.BUTTON_PRIMARY:
+                            self.open_xcf_file(xcf_file)
+                        elif event.type == Gdk.EventType.BUTTON_PRESS and event.button == Gdk.BUTTON_SECONDARY:
+                            # set the flowbox selection to this item
+                            self.project_files_list_widget.select_child(widget.get_parent())
+                            # Right-click detected, show context menu
+                            menu = Gtk.Menu()
 
-                        open_file_menu_item = Gtk.MenuItem(label=_("Open XCF File"))
-                        open_file_menu_item.connect("activate", lambda item: self.open_xcf_file(xcf_file))
-                        menu.append(open_file_menu_item)
+                            open_file_menu_item = Gtk.MenuItem(label=_("Open XCF File"))
+                            open_file_menu_item.connect("activate", lambda item: self.open_xcf_file(xcf_file))
+                            menu.append(open_file_menu_item)
 
-                        # add a horizontal separator
-                        separator = Gtk.SeparatorMenuItem()
-                        menu.append(separator)
+                            # add a horizontal separator
+                            separator = Gtk.SeparatorMenuItem()
+                            menu.append(separator)
 
-                        menu_item_delete = Gtk.MenuItem(label=_("Delete XCF File"))
-                        menu_item_delete.connect("activate", lambda item: self.delete_xcf_file(xcf_file))
-                        menu.append(menu_item_delete)
-                        menu.show_all()
-                        menu.popup_at_pointer(event)
+                            rename_file_menu_item = Gtk.MenuItem(label=_("Rename File"))
+                            rename_file_menu_item.connect("activate", lambda item: self.rename_project_file(xcf_file))
+                            menu.append(rename_file_menu_item)
 
-                new_file_element_event_box.connect("button-press-event", on_xcf_file_double_click)
+                            # add a horizontal separator
+                            separator = Gtk.SeparatorMenuItem()
+                            menu.append(separator)
 
-        self.xcf_file_list_widget.show_all()
+                            menu_item_delete = Gtk.MenuItem(label=_("Delete XCF File"))
+                            menu_item_delete.connect("activate", lambda item: self.delete_project_file(xcf_file))
+                            menu.append(menu_item_delete)
+                            menu.show_all()
+                            menu.popup_at_pointer(event)
+
+                    new_file_element_event_box.connect("button-press-event", on_xcf_file_double_click)
+                else:
+                    def on_other_file_double_click(widget, event, file_path=os.path.join(self.custom_project_file_folder, project_file)):
+                        extension_with_dot = os.path.splitext(file_path)[1].lower()
+                        if event.type == Gdk.EventType._2BUTTON_PRESS and event.button == Gdk.BUTTON_PRIMARY:
+                            open_file_with_default_app(file_path)
+                        elif event.type == Gdk.EventType.BUTTON_PRESS and event.button == Gdk.BUTTON_SECONDARY:
+                            # set the flowbox selection to this item
+                            self.project_files_list_widget.select_child(widget.get_parent())
+                            # Right-click detected, show context menu
+                            menu = Gtk.Menu()
+                            menu_item_open = Gtk.MenuItem(label=_("Open File"))
+                            menu_item_open.connect("activate", lambda item: open_file_with_default_app(file_path))
+                            menu.append(menu_item_open)
+                            
+                            if extension_with_dot in SUPPORTED_VIDEO_EXTENSIONS:
+                                menu_item_open_in_viewer = Gtk.MenuItem(label=_("Open in Frame by Frame Viewer"))
+                                menu_item_open_in_viewer.connect("activate", lambda item: self.open_frame_by_frame_viewer(file_path))
+                                menu.append(menu_item_open_in_viewer)
+
+                            if extension_with_dot in SUPPORTED_IMAGE_EXTENSIONS:
+                                menu_item_import_as_xcf = Gtk.MenuItem(label=_("Create XCF Project File From this"))
+                                menu_item_import_as_xcf.connect("activate", lambda item: self.on_import_file(file_path))
+                                menu.append(menu_item_import_as_xcf)
+
+                            # add a horizontal separator
+                            separator = Gtk.SeparatorMenuItem()
+                            menu.append(separator)
+
+                            rename_file_menu_item = Gtk.MenuItem(label=_("Rename File"))
+                            rename_file_menu_item.connect("activate", lambda item: self.rename_project_file(file_path))
+                            menu.append(rename_file_menu_item)
+
+                            # add a horizontal separator
+                            separator = Gtk.SeparatorMenuItem()
+                            menu.append(separator)
+
+                            menu_item_delete = Gtk.MenuItem(label=_("Delete File"))
+                            menu_item_delete.connect("activate", lambda item: self.delete_project_file(file_path))
+                            menu.append(menu_item_delete)
+                            menu.show_all()
+                            menu.popup_at_pointer(event)
+                    new_file_element_event_box.connect("button-press-event", on_other_file_double_click)
+
+        self.project_files_list_widget.show_all()
 
     def generate_preview_thumbnail_image(self, image):
         xcf_file = image.get_xcf_file()
@@ -1120,7 +1285,7 @@ class ProjectDialog(Gtk.Dialog):
             "xcf": True,
         })
         self.generate_preview_thumbnail_image(loaded_image)
-        self.update_xcf_file_list([xcf_file_path])
+        self.update_project_file_list([xcf_file_path])
 
     def remove_invalid_images(self):
         valid_images = []
@@ -1166,7 +1331,7 @@ class ProjectDialog(Gtk.Dialog):
             if updated:
                 updated_xcf_files.append(img["image"].get_xcf_file().get_path())
         if len(updated_xcf_files) > 0:
-            self.update_xcf_file_list(updated_xcf_files)
+            self.update_project_file_list(updated_xcf_files)
 
     def cleanup_opened_files(self):
         self.remove_invalid_images()

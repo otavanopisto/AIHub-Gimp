@@ -180,6 +180,9 @@ class FrameByFrameVideoVideoViewer(Gtk.Dialog):
         self.connect("key-press-event", on_key_press)
         self.has_set_event_listeners = True
 
+        # TODO add a menu for the image on second click that allows to extract the current frame
+        # to a new image in gimp, and also replace the frame with an image from gimp
+
     def call_ffmpeg_process(self):
         def run():
             try:

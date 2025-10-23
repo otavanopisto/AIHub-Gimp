@@ -200,6 +200,113 @@ def open_project_file_as_image(finalpath):
 	
 	return None
 
+last_collected_files = []
+
+def process_last_collected_files(current_image, project_is_real):
+	global last_collected_files
+	for collected in last_collected_files:
+		should_delete_file_afterwards = False
+		action = collected["action"]
+		if "paths" in collected:
+			# batch of files
+			if not project_is_real:
+				# when real projects we do not open any batch automatically
+				# but now we need to save all those files to a given folder
+				# so we must ask the user where to save all of them
+				dialog = Gtk.FileChooserNative(title=_("Select Folder to Save Batch Files"), action=Gtk.FileChooserAction.SELECT_FOLDER, transient_for=None, modal=True)
+				response = dialog.run()
+				if response == Gtk.ResponseType.ACCEPT:
+					user_folder = dialog.get_filename()
+					for path in collected["paths"]:
+						try:
+							shutil.copy(path, user_folder)
+						except Exception as e:
+							print("Error copying file to user location:", e)
+		else:
+			finalpath = collected["path"]
+			if action["action"] == "NEW_IMAGE" or (action["action"] == "NEW_LAYER" and current_image is None):
+				# when real projects we do not open the image automatically
+				if not project_is_real:
+					open_project_file_as_image(finalpath)
+			elif action["action"] == "NEW_LAYER":
+				pos_x = action.get("pos_x", 0)
+				pos_y = action.get("pos_y", 0)
+				# we are going to add a new layer to the current image
+				# first lets make a pixbuf from the file at finalpath
+				pixbuf = Pixbuf.new_from_file(finalpath)
+				new_name = action.get("name", _("AI Hub Layer"))
+				layer = Gimp.Layer.new_from_pixbuf(current_image, new_name, pixbuf, 100, Gimp.LayerMode.NORMAL, 0, 100)
+				reference_layer_raw = action.get("reference_layer_id", None)
+				reference_layer_id = int(reference_layer_raw) if reference_layer_raw is not None and reference_layer_raw.isdigit() else None
+				reference_layer = None if reference_layer_id is None else Gimp.Layer.get_by_id(reference_layer_id)
+
+				if reference_layer is None and reference_layer_raw == "__first__":
+					reference_layer = current_image.get_layers()[0] if len(current_image.get_layers()) > 0 else None
+				elif reference_layer is None and reference_layer_raw == "__last__":
+					layers = current_image.get_layers()
+					reference_layer = layers[-1] if len(layers) > 0 else None
+					
+				# get the selected layers before we insert the new one
+				selectedlayers = current_image.get_selected_layers()
+				if reference_layer is None:
+					current_image.insert_layer(layer, None, 0)
+					layer.set_offsets(pos_x, pos_y)
+				else:
+					# can be NEW_BEFORE, NEW_AFTER and REPLACE
+					reference_layer_action = action.get("reference_layer_action", "NEW_AFTER")
+					parent_layer = reference_layer.get_parent()
+					sibling_layers = current_image.get_layers() if parent_layer is None else parent_layer.get_children()
+					reference_layer_index = sibling_layers.index(reference_layer)
+					if reference_layer_action == "NEW_BEFORE":
+						current_image.insert_layer(layer, parent_layer, reference_layer_index + 1)
+					elif reference_layer_action == "NEW_AFTER":
+						current_image.insert_layer(layer, parent_layer, reference_layer_index)
+					elif reference_layer_action == "REPLACE":
+						# in order to avoid destructive actions, we are going to insted
+						# hide it and set it before the new layer
+						reference_layer.set_visible(False)
+						current_image.insert_layer(layer, parent_layer, reference_layer_index + 1)
+					layer.set_offsets(pos_x, pos_y)
+				# go back to the previously selected layers
+				# so the user doesnt suddenly lose their selection
+				current_image.set_selected_layers(selectedlayers)
+
+				# bug in GIMP 3.0.10 where the image is not updated if the layer is made visible again
+				img_width = current_image.get_width()
+				img_height = current_image.get_height()
+				# make a thumbnail starting at 400px with the ratio for the given height
+				height_from_ratio = int(400 * img_height / img_width)
+				pixbuf2 = current_image.get_thumbnail(400,height_from_ratio,Gimp.PixbufTransparency.KEEP_ALPHA)
+
+				layer.set_visible(False)
+				Gimp.displays_flush()
+				layer.set_visible(True)
+				Gimp.displays_flush()
+
+				# do it again for good measure
+				pixbuf3 = current_image.get_thumbnail(400,height_from_ratio,Gimp.PixbufTransparency.KEEP_ALPHA)
+				should_delete_file_afterwards = True
+			else:
+				if not project_is_real:
+					# unknown action, we will just ask the user to save the file
+					dialog = Gtk.FileChooserNative(title=_("Save File"), action=Gtk.FileChooserAction.SAVE, transient_for=None, modal=True)
+					dialog.set_current_name(os.path.basename(finalpath))
+					response = dialog.run()
+					if response == Gtk.ResponseType.ACCEPT:
+						user_filepath = dialog.get_filename()
+						try:
+							# copy the file to the user location
+							shutil.copyfile(finalpath, user_filepath)
+						except Exception as e:
+							print("Error moving file to user location:", e)
+			
+			if should_delete_file_afterwards and os.path.exists(finalpath):
+				try:
+					os.remove(finalpath)
+				except Exception as e:
+					print("Error removing temporary file:", e)
+	last_collected_files = []
+
 def handle_project_file(
 	timeline_path,
 	project_is_real,
@@ -208,83 +315,27 @@ def handle_project_file(
 	current_image,
 	protected_run_mode=False
 ):
-	file_name = action.get("file_name", "unnamed") if action else "unnamed"
-	file_action = action.get("file_action", "REPLACE") if action else "REPLACE"
-	separator = action.get("file_separator", b"") if action else b""
+	file_name = action.get("file_name", "unnamed")
+	file_action = action.get("file_action", "REPLACE")
+	separator = action.get("file_separator", b"")
 	finalpath = store_project_file(timeline_path, project_is_real, file_name, file_action, bytes, separator, protected_run_mode)
-	should_delete_file_afterwards = False
-	if action is not None:
-		if action["action"] == "NEW_IMAGE" or (action["action"] == "NEW_LAYER" and current_image is None):
-			# when real projects we do not open the image automatically
-			if not project_is_real:
-				open_project_file_as_image(finalpath)
-		elif action["action"] == "NEW_LAYER":
-			pos_x = action.get("pos_x", 0)
-			pos_y = action.get("pos_y", 0)
-			# we are going to add a new layer to the current image
-			# first lets make a pixbuf from the file at finalpath
-			pixbuf = Pixbuf.new_from_file(finalpath)
-			new_name = action.get("name", _("AI Hub Layer"))
-			layer = Gimp.Layer.new_from_pixbuf(current_image, new_name, pixbuf, 100, Gimp.LayerMode.NORMAL, 0, 100)
-			reference_layer_raw = action.get("reference_layer_id", None)
-			reference_layer_id = int(reference_layer_raw) if reference_layer_raw is not None and reference_layer_raw.isdigit() else None
-			reference_layer = None if reference_layer_id is None else Gimp.Layer.get_by_id(reference_layer_id)
 
-			if reference_layer is None and reference_layer_raw == "__first__":
-				reference_layer = current_image.get_layers()[0] if len(current_image.get_layers()) > 0 else None
-			elif reference_layer is None and reference_layer_raw == "__last__":
-				layers = current_image.get_layers()
-				reference_layer = layers[-1] if len(layers) > 0 else None
-			
-			# get the selected layers before we insert the new one
-			selectedlayers = current_image.get_selected_layers()
-			if reference_layer is None:
-				current_image.insert_layer(layer, None, 0)
-				layer.set_offsets(pos_x, pos_y)
-			else:
-				# can be NEW_BEFORE, NEW_AFTER and REPLACE
-				reference_layer_action = action.get("reference_layer_action", "NEW_AFTER")
-				parent_layer = reference_layer.get_parent()
-				sibling_layers = current_image.get_layers() if parent_layer is None else parent_layer.get_children()
-				reference_layer_index = sibling_layers.index(reference_layer)
-				if reference_layer_action == "NEW_BEFORE":
-					current_image.insert_layer(layer, parent_layer, reference_layer_index + 1)
-				elif reference_layer_action == "NEW_AFTER":
-					current_image.insert_layer(layer, parent_layer, reference_layer_index)
-				elif reference_layer_action == "REPLACE":
-					# in order to avoid destructive actions, we are going to insted
-					# hide it and set it before the new layer
-					reference_layer.set_visible(False)
-					current_image.insert_layer(layer, parent_layer, reference_layer_index + 1)
-				layer.set_offsets(pos_x, pos_y)
-			# go back to the previously selected layers
-			# so the user doesnt suddenly lose their selection
-			current_image.set_selected_layers(selectedlayers)
-
-			# bug in GIMP 3.0.10 where the image is not updated if the layer is made visible again
-			img_width = current_image.get_width()
-			img_height = current_image.get_height()
-			# make a thumbnail starting at 400px with the ratio for the given height
-			height_from_ratio = int(400 * img_height / img_width)
-			pixbuf2 = current_image.get_thumbnail(400,height_from_ratio,Gimp.PixbufTransparency.KEEP_ALPHA)
-
-			layer.set_visible(False)
-			Gimp.displays_flush()
-			layer.set_visible(True)
-			Gimp.displays_flush()
-
-			# do it again for good measure
-			pixbuf3 = current_image.get_thumbnail(400,height_from_ratio,Gimp.PixbufTransparency.KEEP_ALPHA)
-			should_delete_file_afterwards = True
-	
-	if should_delete_file_afterwards and os.path.exists(finalpath):
-		try:
-			os.remove(finalpath)
-		except Exception as e:
-			print("Error removing temporary file:", e)
-
-
-
+	if action["batch_index"] is not None:
+		# when real projects we do not open any batch automatically
+		if not project_is_real:
+			# we need to find if we have an existing entry for these files
+			found_existing_entry = False
+			for entry in last_collected_files:
+				if entry["action"]["file_name"] == file_name:
+					entry["paths"].append(finalpath)
+					found_existing_entry = True
+					break
+			if not found_existing_entry:
+				last_collected_files.append({"action": action, "paths": [finalpath]})
+	else:
+		if not project_is_real:
+			# unknown action, we will just try to ask the user to save the file, once we are done
+			last_collected_files.append({"action": action, "path": finalpath})
 
 def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 	GimpUi.init("AIHub.py")
@@ -1191,9 +1242,12 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 					self.websocket_relegator = websocket_relegator
 					status = element.upload_binary(self.websocket, self.websocket_relegator)
 					self.websocket_relegator = None
-					if (status is False):
+					if (status is False or type(status) is str):
 						self.mark_as_running(False)
-						self.setStatus(_("Error: Failed to upload binary data"))
+						if type(status) is str:
+							self.setStatus(_("Error: Failed to upload binary data due to: {}").format(status))
+						else:
+							self.setStatus(_("Error: Failed to upload binary data"))
 						return
 					values[element.id] = element.get_value()
 

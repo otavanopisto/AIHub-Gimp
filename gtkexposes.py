@@ -170,7 +170,7 @@ class AIHubExposeImage(AIHubExposeBase):
 	def get_special_priority(self):
 		return 100
 	
-	def __init__(self, id, data, workflow_context, workflow_id, workflow, project_current_timeline_path, project_saved_path, apinfo):
+	def __init__(self, id, data, workflow_context, workflow_id, workflow, project_current_timeline_path, project_saved_path, apinfo, is_frame=False):
 		super().__init__(id, data, workflow_context, workflow_id, workflow, project_current_timeline_path, project_saved_path, apinfo)
 
 		self.label: Gtk.Label = None
@@ -194,6 +194,8 @@ class AIHubExposeImage(AIHubExposeBase):
 		self.value_height: int = 0
 		self.value_layer_id: str = ""
 
+		self.is_frame = is_frame
+
 		known_tooltip = None
 
 		if ("tooltip" in self.data and self.data["tooltip"] is not None and self.data["tooltip"] != ""):
@@ -201,7 +203,7 @@ class AIHubExposeImage(AIHubExposeBase):
 
 		if (not self.is_using_internal_file()):
 			#first let's build a file selector
-			self.select_button = Gtk.Button(label=_("Select an image from a file"), xalign=0)
+			self.select_button = Gtk.Button(label=_("Select a video frame from a file") if is_frame else _("Select an image from a file"), xalign=0)
 			self.select_button.connect("clicked", self.on_file_chooser_clicked)
 
 			self.select_combo = Gtk.ComboBox()
@@ -272,16 +274,46 @@ class AIHubExposeImage(AIHubExposeBase):
 
 			self.load_image_data_for_internal()
 
+		if self.is_frame:
+			self.frame_widget_label = Gtk.Label(_("Frame index (zero indexed)"), xalign=0)
+
+			initial_frame_number = self.initial_value.get("frame", 0) if self.initial_value is not None else 0
+			frame_adjustment = Gtk.Adjustment(
+				value=initial_frame_number,
+				lower=0,
+				upper=1000000,
+				step_increment=1,
+			)
+			self.frame_widget = Gtk.SpinButton(adjustment=frame_adjustment, climb_rate=1, digits=0, numeric=True)
+			self.frame_widget.set_input_purpose(Gtk.InputPurpose.NUMBER)
+
+			self.total_frame_widget_label = Gtk.Label(_("Total frames in the video"), xalign=0)
+
+			initial_total_frames = self.initial_value.get("total_frames", 1) if self.initial_value is not None else 1
+			total_frames_adjustment = Gtk.Adjustment(
+				value=initial_total_frames,
+				lower=1,
+				upper=1000000,
+				step_increment=1,
+			)
+			self.total_frames_widget = Gtk.SpinButton(adjustment=total_frames_adjustment, climb_rate=1, digits=0, numeric=True)
+			self.total_frames_widget.set_input_purpose(Gtk.InputPurpose.NUMBER)
+
+			self.box.pack_start(self.frame_widget_label, False, False, 0)
+			self.box.pack_start(self.frame_widget, False, False, 0)
+			self.box.pack_start(self.total_frame_widget_label, False, False, 0)
+			self.box.pack_start(self.total_frames_widget, False, False, 0)
+
 	def upload_binary(self, ws, relegator=None):
 		self.uploaded_file_path = None
 
 		if (self.info_only_mode):
-			return
+			return True
 		
 		# first lets get the file that we are going to upload
 		file_to_upload = None
 		if (not self.is_using_internal_file()):
-			if (self.selected_filename is not None and not os.path.exists(self.selected_filename)):
+			if (self.selected_filename is not None and os.path.exists(self.selected_filename)):
 				file_to_upload = self.selected_filename
 			elif (self.select_combo.get_active() != -1 and self.select_combo.get_model() is not None):
 				tree_iter = self.select_combo.get_active_iter()
@@ -296,9 +328,9 @@ class AIHubExposeImage(AIHubExposeBase):
 						Gimp.file_save(Gimp.RunMode.NONINTERACTIVE, gimp_image, gfile, None)
 			else:
 				# nothing selected
-				return
+				return False
 		else:
-			load_type = self.data["type"]
+			load_type = self.data.get("type", "upload")
 			# an image has been selected but not a layer
 			if self.selected_image is not None and self.selected_layer is None:
 				# save the image to a temporary file
@@ -419,7 +451,7 @@ class AIHubExposeImage(AIHubExposeBase):
 						self.selected_layer.set_visible(True)
 			else:
 				# no image selected
-				return
+				return False
 			
 		# now we need to make a calculation for a hash of the file to upload
 		hash_md5 = hashlib.md5()
@@ -523,13 +555,21 @@ class AIHubExposeImage(AIHubExposeBase):
 			self.success_label.show()
 			self.success_label.set_text(_("File already exists on server, upload skipped"))
 
-			self.uploaded_file_path = upload_file_hash
+			filename = response_data.get("file", None)
+			self.uploaded_file_path = filename
+
+			if self.uploaded_file_path is None:
+				self.error_label.show()
+				self.success_label.hide()
+				self.error_label.set_text("Error uploading file: No file path returned by server")
+				return False
+			
 			return True
 
 		return False
 
 	def load_image_data_for_internal(self):
-		load_type = self.data["type"]
+		load_type = self.data.get("type", "upload")
 		# load types are ["current_layer","merged_image",
 		# "merged_image_without_current_layer","merged_image_current_layer_intersection",
 		# "merged_image_current_layer_intersection_without_current_layer",
@@ -621,7 +661,10 @@ class AIHubExposeImage(AIHubExposeBase):
 		if (self.selected_filename is not None):
 			# clear the selection
 			self.selected_filename = None
-			self.select_button.set_label(_("Select an image from a file"))
+			if self.is_frame:
+				self.select_button.set_label(_("Select a frame from the video"))
+			else:
+				self.select_button.set_label(_("Select an image from a file"))
 			self.select_combo.show()
 			self.on_file_selected()
 			return
@@ -655,7 +698,7 @@ class AIHubExposeImage(AIHubExposeBase):
 		return self.box
 	
 	def is_using_internal_file(self):
-		if (self.data["type"] == "upload"):
+		if (self.data.get("type", "upload") == "upload" or self.is_frame):
 			return False
 		return True
 
@@ -673,7 +716,7 @@ class AIHubExposeImage(AIHubExposeBase):
 
 	def load_image_preview(self):
 		if self.is_using_internal_file():
-			load_type = self.data["type"]
+			load_type = self.data.get("type", "upload")
 			if self.selected_image is not None:
 				try:
 					height_from_ratio = int(self.value_height * (400 / self.value_width))
@@ -816,22 +859,29 @@ class AIHubExposeImage(AIHubExposeBase):
 				self.value_pos_y = 0
 	
 	def get_value_base(self):
+		dictValue = None
 		if (self.selected_filename is not None and os.path.exists(self.selected_filename)):
-			return {
+			dictValue = {
 				"_local_file": self.selected_filename,
 				"local_file": self.uploaded_file_path,
 				"pos_x": self.value_pos_x,
 				"pos_y": self.value_pos_y,
 				"layer_id": self.value_layer_id
 			}
-		elif (self.uploaded_file_path is not None):
-			return {
+		else:
+			dictValue = {
 				"local_file": self.uploaded_file_path,
 				"pos_x": self.value_pos_x,
 				"pos_y": self.value_pos_y,
 				"layer_id": self.value_layer_id
 			}
-		return None
+		if self.is_frame:
+			del dictValue["layer_id"]
+			del dictValue["pos_x"]
+			del dictValue["pos_y"]
+			dictValue["frame"] = self.frame_widget.get_value()
+			dictValue["total_frames"] = self.total_frames_widget.get_value()
+		return dictValue
 	
 	def get_value(self):
 		base_value = self.get_value_base()
@@ -917,6 +967,10 @@ class AIHubExposeImageInfoOnly(AIHubExposeImage):
 		super().__init__(id, data, workflow_context, workflow_id, workflow, project_current_timeline_path, project_saved_path, apinfo)
 
 		self.info_only_mode = True
+
+class AIHubExposeFrame(AIHubExposeImage):
+	def __init__(self, id, data, workflow_context, workflow_id, workflow, project_current_timeline_path, project_saved_path, apinfo):
+		super().__init__(id, data, workflow_context, workflow_id, workflow, project_current_timeline_path, project_saved_path, apinfo, is_frame=True)
 
 class AIHubExposeImageBatch(AIHubExposeBase):
 	def get_special_priority(self):
@@ -1545,6 +1599,261 @@ class AIHubExposeSampler(AIHubExposeStringSelection):
 			self.on_change(self.get_value())
 			self.check_validity(self.get_value())
 
+class AIHubExposeProjectFileBase(AIHubExposeBase):
+	def __init__(self, id, data, workflow_context, workflow_id, workflow, project_current_timeline_path, project_saved_path, apinfo):
+		super().__init__(id, data, workflow_context, workflow_id, workflow, project_current_timeline_path, project_saved_path, apinfo)
+
+		self.uploaded_file_path: str = None
+
+	def upload_binary(self, ws, relegator=None):
+		file_name = self.data.get("file_name", None)
+		batch_index = self.data.get("batch_index", "")
+		file_to_upload = os.path.join(self.project_current_timeline_path, file_name)
+		if batch_index.strip() != "":
+			batch_index_as_int = 0
+			try:
+				batch_index_as_int = int(batch_index)
+			except:
+				batch_index_as_int = 0
+			# however there may be gaps in the numbering, due to potentially deleted files
+			# also negative indexes should count from the end so we need to get all files that match the pattern
+			matching_files = []
+			prefix = os.path.splitext(file_name)[0] + "_"
+			extension = os.path.splitext(file_name)[1]
+			for f in os.listdir(self.project_current_timeline_path):
+				if f.startswith(prefix) and f.endswith(extension):
+					# check if the middle part is an integer
+					middle_part = f[len(prefix):-len(extension)]
+					try:
+						matching_files.append({"file": f, "index": int(middle_part)})
+					except:
+						# maybe not an integer, skip
+						continue
+			# sort the matching files by index
+			matching_files = sorted(matching_files, key=lambda x: x["index"])
+			if batch_index_as_int < 0:
+				batch_index_as_int = len(matching_files) + batch_index_as_int
+			if batch_index_as_int < 0 or batch_index_as_int >= len(matching_files):
+				return _("The specified batch index {} is out of range for files matching {}").format(batch_index, file_name)
+			file_to_upload = os.path.join(self.project_current_timeline_path, matching_files[batch_index_as_int]["file"])
+
+		# now we need to make a calculation for a hash of the file to upload
+		hash_md5 = hashlib.md5()
+		# make a new binary data to upload
+		file_data = b""
+		with open(file_to_upload, "rb") as f:
+			data = f.read()  # read whole thing
+			file_data = data
+			hash_md5.update(data)
+				
+		upload_file_hash = hash_md5.hexdigest()
+
+		# now we can upload the file, using that hash as filename, if the file does not exist
+		binary_header = {
+			"type": "FILE_UPLOAD",
+			"filename": upload_file_hash,
+			"workflow_id": self.workflow_id,
+			"if_not_exists": True
+		}
+
+		relegator.reset()
+
+		ws.send(json.dumps(binary_header))
+
+		if not relegator.wait(10):
+			return _("Error uploading file {}: Timeout waiting for server response").format(file_to_upload)
+		
+		response_data = relegator.last_response
+
+		if (response_data["type"] == "ERROR"):
+			return _("Error uploading file {}: {}").format(file_to_upload, response_data.get('message', _('Unknown error')))
+		elif (response_data["type"] == "UPLOAD_ACK"):
+			try:
+				relegator.reset()
+				ws.send_bytes(file_data)
+				
+				# wait for the upload ack
+				if not relegator.wait(10):
+					return _("Error uploading file {}: Timeout waiting for server response after sending data").format(file_to_upload)
+
+				response_data = relegator.last_response
+
+				if (response_data["type"] == "ERROR"):
+					return _("Error uploading file {}: {}").format(file_to_upload, response_data.get('message', _('Unknown error')))
+				elif (response_data["type"] == "FILE_UPLOAD_SUCCESS"):
+					filename = response_data.get("file", None)
+					self.uploaded_file_path = filename
+
+					if self.uploaded_file_path is None:
+						return _("Error uploading file {}: Server did not return uploaded file path").format(file_to_upload)
+
+					# upload successful
+					return True
+				# unexpected response
+				return _("Error uploading file {}: Unexpected server response").format(file_to_upload)
+			except Exception as e:
+				return _("Error uploading file {}: {}").format(file_to_upload, str(e))
+		elif (response_data["type"] == "FILE_UPLOAD_SKIP"):
+			# file already exists on server
+			filename = response_data.get("file", None)
+			self.uploaded_file_path = filename
+			if self.uploaded_file_path is None:
+				return _("Error uploading file {}: Server did not return uploaded file path").format(file_to_upload)
+			return True
+
+		return _("Error uploading file {}: Unexpected server response").format(file_to_upload)
+	
+	def get_value(self):
+		return {
+			"local_file": self.uploaded_file_path,
+		}
+	
+class AIHubExposeProjectFilesBase(AIHubExposeBase):
+	def __init__(self, id, data, workflow_context, workflow_id, workflow, project_current_timeline_path, project_saved_path, apinfo):
+		super().__init__(id, data, workflow_context, workflow_id, workflow, project_current_timeline_path, project_saved_path, apinfo)
+
+		self.uploaded_file_paths: list[str] = []
+
+	def upload_binary(self, ws, relegator=None):
+		file_name = self.data.get("file_name", None)
+		indexes = self.data.get("indexes", "")
+		files_to_upload = []
+
+		self.uploaded_file_paths = []
+
+		matching_files = []
+		prefix = os.path.splitext(file_name)[0] + "_"
+		extension = os.path.splitext(file_name)[1]
+		for f in os.listdir(self.project_current_timeline_path):
+			if f.startswith(prefix) and f.endswith(extension):
+				# check if the middle part is an integer
+				middle_part = f[len(prefix):-len(extension)]
+				try:
+					matching_files.append({"file": f, "index": int(middle_part)})
+				except:
+					# maybe not an integer, skip
+					continue
+
+		# sort the matching files by index
+		matching_files = sorted(matching_files, key=lambda x: x["index"])
+
+		if indexes.strip() == "":
+			# upload all matching files
+			for match in matching_files:
+				files_to_upload.append(os.path.join(self.project_current_timeline_path, match["file"]))
+		elif "," in indexes:
+			# multiple indexes specified
+			for index_part in indexes.split(","):
+				index_part = index_part.strip()
+				if index_part != "":
+					batch_index_as_int = 0
+					try:
+						batch_index_as_int = int(index_part)
+					except:
+						batch_index_as_int = 0
+					if batch_index_as_int < 0:
+						batch_index_as_int = len(matching_files) + batch_index_as_int
+					if batch_index_as_int < 0 or batch_index_as_int >= len(matching_files):
+						return _("The specified batch index {} is out of range for files matching {}").format(batch_index_as_int, file_name)
+					files_to_upload.append(os.path.join(self.project_current_timeline_path, matching_files[batch_index_as_int]["file"]))
+		elif ":" in indexes:
+			# range of indexes specified
+			parts = indexes.split(":")
+			if len(parts) != 2:
+				return _("The specified indexes {} are invalid for files matching {}").format(indexes, file_name)
+			start_index = 0
+			end_index = 0
+			try:
+				start_index = int(parts[0].strip())
+			except:
+				start_index = 0
+			try:
+				end_index = int(parts[1].strip())
+			except:
+				end_index = -1
+			if start_index < 0:
+				start_index = len(matching_files) + start_index
+			if end_index < 0:
+				end_index = len(matching_files) + end_index
+			if start_index < 0 or end_index >= len(matching_files) or start_index > end_index:
+				return _("The specified batch index range {} is out of range for files matching {}").format(indexes, file_name)
+			for i in range(start_index, end_index + 1):
+				files_to_upload.append(os.path.join(self.project_current_timeline_path, matching_files[i]["file"]))
+
+		for file_to_upload in files_to_upload:
+			# now we need to make a calculation for a hash of the file to upload
+			hash_md5 = hashlib.md5()
+			# make a new binary data to upload
+			file_data = b""
+			with open(file_to_upload, "rb") as f:
+				data = f.read()  # read whole thing
+				file_data = data
+				hash_md5.update(data)
+					
+			upload_file_hash = hash_md5.hexdigest()
+
+			# now we can upload the file, using that hash as filename, if the file does not exist
+			binary_header = {
+				"type": "FILE_UPLOAD",
+				"filename": upload_file_hash,
+				"workflow_id": self.workflow_id,
+				"if_not_exists": True
+			}
+
+			relegator.reset()
+
+			ws.send(json.dumps(binary_header))
+
+			if not relegator.wait(10):
+				return _("Error uploading file {}: Timeout waiting for server response").format(file_to_upload)
+			
+			response_data = relegator.last_response
+
+			if (response_data["type"] == "ERROR"):
+				return _("Error uploading file {}: {}").format(file_to_upload, response_data.get('message', _('Unknown error')))
+			elif (response_data["type"] == "UPLOAD_ACK"):
+				try:
+					relegator.reset()
+					ws.send_bytes(file_data)
+					
+					# wait for the upload ack
+					if not relegator.wait(10):
+						return _("Error uploading file {}: Timeout waiting for server response after sending data").format(file_to_upload)
+
+					response_data = relegator.last_response
+
+					if (response_data["type"] == "ERROR"):
+						return _("Error uploading file {}: {}").format(file_to_upload, response_data.get('message', _('Unknown error')))
+					elif (response_data["type"] == "FILE_UPLOAD_SUCCESS"):
+						filename = response_data.get("file", None)
+						uploaded_file_path = filename
+
+						if uploaded_file_path is None:
+							return _("Error uploading file {}: Server did not return uploaded file path").format(file_to_upload)
+						
+						self.uploaded_file_paths.append(uploaded_file_path)
+
+						# upload successful
+						continue
+					# unexpected response
+					return _("Error uploading file {}: Unexpected server response").format(file_to_upload)
+				except Exception as e:
+					return _("Error uploading file {}: {}").format(file_to_upload, str(e))
+			elif (response_data["type"] == "FILE_UPLOAD_SKIP"):
+				# file already exists on server
+				filename = response_data.get("file", None)
+				if filename is None:
+					return _("Error uploading file {}: Server did not return uploaded file path").format(file_to_upload)
+				self.uploaded_file_paths.append(filename)
+				continue
+
+			return _("Error uploading file {}: Unexpected server response").format(file_to_upload)
+	
+	def get_value(self):
+		return {
+			"local_files": self.uploaded_file_paths,
+		}
+
 class AIHubExposeProjectConfigBase(AIHubExposeBase):
 	def get_value(self):
 		value = self.read_project_config_json(self.data["field"])
@@ -2104,25 +2413,40 @@ class AIHubExposeModel(AIHubExposeBase):
 
 EXPOSES = {
 	"AIHubExposeInteger": AIHubExposeInteger,
-	"AIHubExposeSteps": AIHubExposeSteps,
-	"AIHubExposeCfg": AIHubExposeCfg,
-	"AIHubExposeProjectConfigInteger": AIHubExposeProjectConfigInteger,
-	"AIHubExposeProjectConfigString": AIHubExposeProjectConfigString,
-	"AIHubExposeProjectConfigBoolean": AIHubExposeProjectConfigBoolean,
-	"AIHubExposeProjectConfigFloat": AIHubExposeProjectConfigFloat,
 	"AIHubExposeFloat": AIHubExposeFloat,
 	"AIHubExposeBoolean": AIHubExposeBoolean,
 	"AIHubExposeString": AIHubExposeString,
 	"AIHubExposeStringSelection": AIHubExposeStringSelection,
+	"AIHubExposeSeed": AIHubExposeSeed,
+
 	"AIHubExposeImage": AIHubExposeImage,
 	"AIHubExposeImageInfoOnly": AIHubExposeImageInfoOnly,
 	"AIHubExposeImageBatch": AIHubExposeImageBatch,
-	"AIHubExposeSeed": AIHubExposeSeed,
-	"AIHubExposeSampler": AIHubExposeSampler,
+
 	"AIHubExposeScheduler": AIHubExposeScheduler,
 	"AIHubExposeExtendableScheduler": AIHubExposeExtendableScheduler,
+	"AIHubExposeSampler": AIHubExposeSampler,
+	"AIHubExposeCfg": AIHubExposeCfg,
+	"AIHubExposeSteps": AIHubExposeSteps,
+
 	"AIHubExposeModel": AIHubExposeModel,
 	# the simple uses the same as the standard on the display, since it only differs on how
 	# it is configured in the backend
 	"AIHubExposeModelSimple": AIHubExposeModel,
+
+	"AIHubExposeAudio": None,
+	"AIHubExposeVideo": None,
+	"AIHubExposeFrame": AIHubExposeFrame,
+
+	"AIHubExposeProjectAudio": AIHubExposeProjectFileBase,
+	"AIHubExposeProjectVideo": AIHubExposeProjectFileBase,
+	"AIHubExposeProjectImage": AIHubExposeProjectFileBase,
+	"AIHubExposeProjectText": AIHubExposeProjectFileBase,
+	"AIHubExposeProjectImageBatch": AIHubExposeProjectFilesBase,
+	"AIHubExposeProjectLatent": AIHubExposeProjectFileBase,
+
+	"AIHubExposeProjectConfigInteger": AIHubExposeProjectConfigInteger,
+	"AIHubExposeProjectConfigString": AIHubExposeProjectConfigString,
+	"AIHubExposeProjectConfigBoolean": AIHubExposeProjectConfigBoolean,
+	"AIHubExposeProjectConfigFloat": AIHubExposeProjectConfigFloat,
 }

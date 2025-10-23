@@ -1,5 +1,6 @@
 about.py
 AIHub.py
+frame_by_frame.py
 gtkexposes.py
 label.py
 project.py

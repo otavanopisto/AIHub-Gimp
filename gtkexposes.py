@@ -38,6 +38,7 @@ class AIHubExposeBase:
 		self.workflow_context = workflow_context
 		self.workflow_id = workflow_id
 		self.initial_value = get_aihub_common_property_value(workflow_context, workflow_id, self.id, project_saved_path)
+		self.had_initial_value_loaded_from_configfile = self.initial_value is not None
 		self.workflow = workflow
 		self.project_current_timeline_path = project_current_timeline_path
 		self.project_saved_path = project_saved_path
@@ -1782,7 +1783,7 @@ class AIHubExposeModel(AIHubExposeBase):
 			self.widget.append(self.options[i], self.labels[i])
 
 		# set the initial value if available
-		if self.initial_value is not None and self.initial_value["_id"] in self.options and self.data.get("disable_model_selection", False):
+		if self.initial_value is not None and self.initial_value["_id"] in self.options and not self.data.get("disable_model_selection", False):
 			self.widget.set_active_id(self.initial_value["_id"])
 			self.model = next((m for m in data["filtered_models"] if m["id"] == self.initial_value["_id"]), None)
 		elif "model" in data and data["model"] is not None and data["model"] in self.options:
@@ -1886,7 +1887,10 @@ class AIHubExposeModel(AIHubExposeBase):
 	def recalculate_loras(self):
 		new_loras = []
 		for lora in self.data["filtered_loras"]:
-			if lora["limit_to_model"] is None or lora["limit_to_model"] == self.model["id"]:
+			if (
+				("limit_to_model" not in lora or lora["limit_to_model"] is None or lora["limit_to_model"] == self.model["id"]) and
+				("limit_to_group" not in lora or lora["limit_to_group"] is None or "group" not in self.model or self.model["group"] == lora["limit_to_group"])
+			):
 				new_loras.append(lora)
 
 		new_loras_ids = [l["id"] for l in new_loras]
@@ -2065,7 +2069,9 @@ class AIHubExposeModel(AIHubExposeBase):
 		
 		# the model is ours, we need to update the image
 		self.load_model_image_and_description()
-
+		# also recalculate the loras
+		if not self.data.get("disable_loras_selection", False):
+			self.recalculate_loras()
 		self.on_change(self.get_value())
 
 	def can_run(self):

@@ -841,8 +841,8 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 				self.setStatus(_("Error: {}").format(str(e)))
 				self.setErrored()
 
-		def on_model_changed(self, new_model_id):
-			model_info = next((model for model in self.models if model["id"] == new_model_id), None)
+		def on_model_changed(self, new_model_value):
+			model_info = next((model for model in self.models if model["id"] == new_model_value["_id"]), None)
 			if not model_info:
 				return
 			# we are going to loop through all the workflow_elements_all
@@ -987,13 +987,23 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 							instance.current_image_changed(self.selected_image, self.image_selector.get_model())
 						self.workflow_elements_all.append(instance)
 
-						if type == "AIHubExposeModel":
+						if type == "AIHubExposeModel" or type == "AIHubExposeModelSimple":
 							instance.hook_on_change_fn(self.on_model_changed)
 				
 				# now we have to sort self.workflow_elements_all by the get_index function that returns a number
 				# if two elements return the same number, then we sort them by their get_special_priority function that returns a number
 				# the highest number goes first in the case of get_special_priority
 				self.workflow_elements_all.sort(key=lambda x: (x.get_index(), -x.get_special_priority()))
+
+				for instance in self.workflow_elements_all:
+					class_name = instance.__class__.__name__
+					if class_name == "AIHubExposeModel" or class_name == "AIHubExposeModelSimple":
+						# if the instance did not load its initial value from the config file
+						# this means it used the default value, so we need to trigger the on_model_changed
+						# so that other elements that depend on the model get updated
+						# as they will also not have loaded their initial value from the config file
+						if not instance.had_initial_value_loaded_from_configfile:
+							self.on_model_changed(instance.get_value())
 
 				# now we will loop through all the workflow_elements_all that are not marked as advanced and append them to the self.workflow_elements box
 				# provided that they return a widget

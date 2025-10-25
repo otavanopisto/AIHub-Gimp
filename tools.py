@@ -320,7 +320,7 @@ def handle_project_file(
 	separator = action.get("file_separator", b"")
 	finalpath = store_project_file(timeline_path, project_is_real, file_name, file_action, bytes, separator, protected_run_mode)
 
-	if action["batch_index"] is not None:
+	if "batch_index" in action and action["batch_index"] is not None:
 		# when real projects we do not open any batch automatically
 		if not project_is_real:
 			# we need to find if we have an existing entry for these files
@@ -794,6 +794,9 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 			try:
 				selected_context = self.context_selector.get_active_id()
 				selected_category = combo.get_active_id()
+
+				if not selected_context or not selected_category:
+					return
 
 				update_aihub_common_property_value("", selected_context, "default_category", selected_category, self.project_saved_config_json_file)
 
@@ -1320,6 +1323,9 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 					Gimp.displays_flush()
 					self.on_dialog_focus(None, None)
 
+				if not running:
+					process_last_collected_files(self.selected_image, self.project_is_real)
+
 				if hasattr(self, "project_dialog") and self.project_dialog is not None and self.project_is_real and not running:
 					self.project_dialog.refresh(self.project_file_contents, self.project_current_timeline_folder)
 
@@ -1468,6 +1474,32 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 			# add a divider to the menu
 			menu.append(Gtk.SeparatorMenuItem())
 
+			# add a menu entry for adding layers
+			self.menu_item_settings = Gtk.MenuItem(label=_("New 0.5k Layer"))
+			self.menu_item_settings.connect("activate", self.on_new_05k_layer)
+			menu.append(self.menu_item_settings)
+
+			self.menu_item_settings = Gtk.MenuItem(label=_("New 0.75k Layer"))
+			self.menu_item_settings.connect("activate", self.on_new_075k_layer)
+			menu.append(self.menu_item_settings)
+
+			self.menu_item_settings = Gtk.MenuItem(label=_("New 1k Layer"))
+			self.menu_item_settings.connect("activate", self.on_new_1k_layer)
+			menu.append(self.menu_item_settings)
+
+			menu.append(Gtk.SeparatorMenuItem())
+
+			self.menu_item_settings = Gtk.MenuItem(label=_("New empty layer at layer size"))
+			self.menu_item_settings.connect("activate", self.on_new_empty_layer)
+			menu.append(self.menu_item_settings)
+
+			self.menu_item_settings = Gtk.MenuItem(label=_("New layer from visible at layer size"))
+			self.menu_item_settings.connect("activate", self.on_generate_visible_layer)
+			menu.append(self.menu_item_settings)
+
+			# add a divider to the menu
+			menu.append(Gtk.SeparatorMenuItem())
+
 			# add a menu entry for settings
 			self.menu_item_settings = Gtk.MenuItem(label=_("Settings"))
 			self.menu_item_settings.connect("activate", self.on_menu_settings)
@@ -1594,6 +1626,117 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 			except Exception as e:
 				self.setStatus(_("Error: {}").format(str(e)))
 				self.setErrored()
+
+		def on_new_1k_layer(self, menu_item):
+			self.add_new_layer(1024, 1024)
+
+		def on_new_empty_layer(self, menu_item):
+			if self.selected_image is None:
+				self.showErrorDialog(_("Error"), _("No image selected"))
+				return
+			try:
+				layers = self.selected_image.get_selected_layers()
+				reference_layer = None
+				if layers is not None and len(layers) > 0:
+					reference_layer = layers[0]
+				if reference_layer is None:
+					self.showErrorDialog(_("Error"), _("No layers in the selected image"))
+					return
+				width = reference_layer.get_width()
+				height = reference_layer.get_height()
+				self.add_new_layer(width, height)
+			except Exception as e:
+				self.showErrorDialog(_("Error"), _("Could not create new layer: {}").format(str(e)))
+				return
+
+		def on_new_075k_layer(self, menu_item):
+			self.add_new_layer(768, 768)
+
+		def on_new_05k_layer(self, menu_item):
+			self.add_new_layer(512, 512)
+
+		def add_new_layer(self, width: int, height: int):
+			if self.selected_image is None:
+				self.showErrorDialog(_("Error"), _("No image selected"))
+				return
+			try:
+				layers = self.selected_image.get_selected_layers()
+				reference_layer = None
+				if layers is not None and len(layers) > 0:
+					reference_layer = layers[0]
+				layer = Gimp.Layer.new(
+					self.selected_image,
+					_("AIHub Layer {}x{}").format(width, height),
+					width,
+					height,
+					Gimp.ImageType.RGBA_IMAGE,
+					100,
+					Gimp.LayerMode.NORMAL,
+				)
+
+				layer.set_opacity(100.0)
+				layer.set_visible(True)
+
+				offset_x = 0
+				offset_y = 0
+				if reference_layer is None:
+					self.selected_image.insert_layer(layer, None, 0)
+					layer.set_offsets(0,0)
+				else:
+					parent_layer = reference_layer.get_parent()
+					sibling_layers = self.selected_image.get_layers() if parent_layer is None else parent_layer.get_children()
+					reference_layer_index = sibling_layers.index(reference_layer)
+					self.selected_image.insert_layer(layer, parent_layer, reference_layer_index)
+
+					# set offset to match reference layer
+					reference_layer_offsets = reference_layer.get_offsets()
+					layer.set_offsets(reference_layer_offsets.offset_x, reference_layer_offsets.offset_y)
+					offset_x = reference_layer_offsets.offset_x
+					offset_y = reference_layer_offsets.offset_y
+				layer.set_offsets(offset_x, offset_y)
+				Gimp.displays_flush()
+
+				# reselect the previous layer due to bugs in gimp
+				new_selected_layers = [layer]
+				self.selected_image.set_selected_layers(layers)
+				self.selected_image.set_selected_layers(new_selected_layers)
+				
+			except Exception as e:
+				self.showErrorDialog(_("Error"), _("Could not create new layer: {}").format(str(e)))
+				return
+			
+		def on_generate_visible_layer(self, menu_item):
+			layers = self.selected_image.get_selected_layers()
+			reference_layer = None
+			if layers is not None and len(layers) > 0:
+				reference_layer = layers[0]
+			if reference_layer is None:
+				self.showErrorDialog(_("Error"), _("No layers in the selected image"))
+				return
+			new_layer = Gimp.Layer.new_from_visible(self.selected_image, self.selected_image)
+			self.selected_image.insert_layer(new_layer, None, 0)
+
+			new_layer.set_offsets(0,0)
+			new_layer.set_opacity(100.0)
+			new_layer.set_visible(True)
+
+			# now we need to calculate the intersection of the current layer with the image
+			layer_offsets = reference_layer.get_offsets()
+			x1 = max(0, layer_offsets.offset_x)
+			y1 = max(0, layer_offsets.offset_y)
+			x2 = min(self.selected_image.get_width(), layer_offsets.offset_x + reference_layer.get_width())
+			y2 = min(self.selected_image.get_height(), layer_offsets.offset_y + reference_layer.get_height())
+
+			# now we need to crop the new layer to the intersection
+			new_width = x2 - x1
+			new_height = y2 - y1
+			# for some reason the resize function takes negative offsets
+			offset_x = -x1
+			offset_y = -y1
+
+			new_layer.resize(new_width, new_height, offset_x, offset_y)
+
+			Gimp.displays_flush()
 
 		def on_menu_settings(self, menu_item):
 			if not hasattr(self, "settings_dialog") or self.settings_dialog is None:

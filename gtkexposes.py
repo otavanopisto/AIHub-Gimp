@@ -1994,7 +1994,9 @@ class AIHubExposeLora(AIHubExposeBase):
 	def set_enabled(self, enabled: bool):
 		self.enabled = enabled
 		if self.enabled:
-			self.box.show()
+			self.box.show_all()
+			if self.no_image:
+				self.image.hide()
 		else:
 			self.box.hide()
 		self.on_change(self.get_value())

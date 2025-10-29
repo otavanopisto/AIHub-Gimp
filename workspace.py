@@ -144,6 +144,10 @@ def update_aihub_common_property_value(workflow_context: str, workflow_id: str, 
 				current_level = current_level[key]
 			else:
 				current_level = expected_next_level
+				if isinstance(next_key, int):
+					# if the next key is an index, we need to ensure the list is big enough
+					while len(current_level) <= next_key:
+						current_level.append(None)
 
 		if current_level is not None:
 			last_key = property_id[-1]

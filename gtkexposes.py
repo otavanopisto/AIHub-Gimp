@@ -72,13 +72,13 @@ class AIHubExposeBase:
 					break
 			return config
 
-	def get_value(self):
+	def get_value(self, half_size=False):
 		return None
 
 	def get_widget(self):
 		pass
 
-	def upload_binary(self, ws, relegator=None):
+	def upload_binary(self, ws, relegator=None, half_size=False):
 		# upload a binary before getting the value, if any this function is called
 		# when the value is requested by the run function
 		return True
@@ -113,6 +113,9 @@ class AIHubExposeBase:
 	def change_id(self, new_id):
 		self.id = new_id
 
+	def get_id(self):
+		return self.id
+
 	def change_label(self, new_label):
 		if hasattr(self, 'label') and self.label is not None:
 			self.label.set_text(new_label)
@@ -122,7 +125,7 @@ class AIHubExposeBase:
 		GLib.source_remove(self._on_change_timeout_id)
 		self._on_change_timeout_id = None
 
-	def after_ui_built(self):
+	def after_ui_built(self, workflow_elements_all):
 		# this function is called after the UI is built, it can be used to do any
 		# additional setup that requires the UI to be fully built
 		pass
@@ -165,6 +168,31 @@ class AIHubExposeBase:
 	
 	def get_special_priority(self):
 		return 0
+	
+def save_image_file(gimp_image, file_path, half_size=False):
+	if half_size:
+		# we need to create a new image with half size
+		new_image = Gimp.Image.new(gimp_image.get_width(), gimp_image.get_height(), gimp_image.get_base_type())
+
+		# now we need to scale each layer and add it to the new image
+		new_layer = Gimp.Layer.new_from_visible(gimp_image, new_image)
+		new_image.insert_layer(new_layer, None, 0)
+
+		new_width = gimp_image.get_width() // 2
+		new_height = gimp_image.get_height() // 2
+
+		new_image.scale(new_width, new_height)
+
+	gimp_image = new_image
+
+	# create a new gfile to save the image
+	gfile = Gio.File.new_for_path(file_path)
+	Gimp.file_save(Gimp.RunMode.NONINTERACTIVE, gimp_image, gfile, None)
+
+	if half_size:
+		gimp_image.delete()
+
+	return (gfile, )
 
 class AIHubExposeImage(AIHubExposeBase):
 	def get_special_priority(self):
@@ -304,7 +332,7 @@ class AIHubExposeImage(AIHubExposeBase):
 			self.box.pack_start(self.total_frame_widget_label, False, False, 0)
 			self.box.pack_start(self.total_frames_widget, False, False, 0)
 
-	def upload_binary(self, ws, relegator=None):
+	def upload_binary(self, ws, relegator=None, half_size=False):
 		self.uploaded_file_path = None
 
 		if (self.info_only_mode):
@@ -315,6 +343,17 @@ class AIHubExposeImage(AIHubExposeBase):
 		if (not self.is_using_internal_file()):
 			if (self.selected_filename is not None and os.path.exists(self.selected_filename)):
 				file_to_upload = self.selected_filename
+
+				if half_size:
+					# we need to load the image and resize it to half size and save it to a temporary file
+					pixbuf = Pixbuf.new_from_file(self.selected_filename)
+					new_width = pixbuf.get_width() // 2
+					new_height = pixbuf.get_height() // 2
+					scaled_pixbuf = pixbuf.scale_simple(new_width, new_height, InterpType.BILINEAR)
+
+					# save to a temporary file
+					file_to_upload = os.path.join(GLib.get_tmp_dir(), f"aihub_temp_image_halfsize_{random.randint(0, 1000000)}.png")
+					scaled_pixbuf.savev(file_to_upload, "png", [], [])
 			elif (self.select_combo.get_active() != -1 and self.select_combo.get_model() is not None):
 				tree_iter = self.select_combo.get_active_iter()
 				if tree_iter is not None:
@@ -322,10 +361,9 @@ class AIHubExposeImage(AIHubExposeBase):
 					gimp_image = Gimp.Image.get_by_id(id_of_image)
 					if gimp_image is not None:
 						# save the image to a temporary file
-						file_to_upload = os.path.join(GLib.get_tmp_dir(), f"aihub_temp_image_{id_of_image}.png")
-						# create a new gfile to save the image
-						gfile = Gio.File.new_for_path(file_to_upload)
-						Gimp.file_save(Gimp.RunMode.NONINTERACTIVE, gimp_image, gfile, None)
+						file_to_upload = os.path.join(GLib.get_tmp_dir(), f"aihub_temp_image_{id_of_image}.webp")
+
+						(gfile, ) = save_image_file(gimp_image, file_to_upload, half_size=half_size)
 			else:
 				# nothing selected
 				return False
@@ -337,8 +375,7 @@ class AIHubExposeImage(AIHubExposeBase):
 				id_of_image = self.selected_image.get_id()
 				file_to_upload = os.path.join(GLib.get_tmp_dir(), f"aihub_temp_image_{id_of_image}.webp")
 				# create a new gfile to save the image
-				gfile = Gio.File.new_for_path(file_to_upload)
-				Gimp.file_save(Gimp.RunMode.NONINTERACTIVE, self.selected_image, gfile, None)
+				(gfile, ) = save_image_file(self.selected_image, file_to_upload, half_size=half_size)
 			# an image and a layer have been selected
 			elif self.selected_image is not None and self.selected_layer is not None and load_type == "current_layer":
 				# save the layer to a temporary file
@@ -358,6 +395,12 @@ class AIHubExposeImage(AIHubExposeBase):
 				new_layer.set_offsets(0,0)
 				new_layer.set_opacity(100.0)
 				new_layer.set_visible(True)
+
+				if half_size:
+					new_width = new_image.get_width() // 2
+					new_height = new_image.get_height() // 2
+					new_image.scale(new_width, new_height)
+
 				Gimp.displays_flush()
 				try:
 					Gimp.file_save(Gimp.RunMode.NONINTERACTIVE, new_image, gfile, None)
@@ -366,6 +409,7 @@ class AIHubExposeImage(AIHubExposeBase):
 					raise e
 				finally:
 					new_image.delete()
+					Gimp.displays_flush()
 			elif self.selected_image is not None and self.selected_layer is not None and (
 				load_type == "current_layer_at_image_intersection" or
 				load_type == "merged_image_current_layer_intersection" or
@@ -417,6 +461,11 @@ class AIHubExposeImage(AIHubExposeBase):
 
 				new_image.resize(new_width, new_height, offset_x, offset_y)
 
+				if half_size:
+					new_width = new_image.get_width() // 2
+					new_height = new_image.get_height() // 2
+					new_image.scale(new_width, new_height)
+
 				try:
 					Gimp.file_save(Gimp.RunMode.NONINTERACTIVE, new_image, gfile, None)
 				except Exception as e:
@@ -432,8 +481,6 @@ class AIHubExposeImage(AIHubExposeBase):
 				# save the layer to a temporary file
 				id_of_image = self.selected_image.get_id()
 				file_to_upload = os.path.join(GLib.get_tmp_dir(), f"aihub_temp_layer_{id_of_image}_{load_type}_{self.selected_layer.get_id()}.webp")
-				# create a new gfile to save the image
-				gfile = Gio.File.new_for_path(file_to_upload)
 
 				# hide the layer if not already visible
 				was_visible = False
@@ -442,13 +489,14 @@ class AIHubExposeImage(AIHubExposeBase):
 					self.selected_layer.set_visible(False)
 				
 				try:
-					Gimp.file_save(Gimp.RunMode.NONINTERACTIVE, self.selected_image, gfile, None)
+					(gfile, ) = save_image_file(self.selected_image, file_to_upload, half_size=half_size)
 				except Exception as e:
 					raise e
 				finally:
 					# restore the visibility
 					if was_visible:
 						self.selected_layer.set_visible(True)
+						Gimp.displays_flush()
 			else:
 				# no image selected
 				return False
@@ -875,6 +923,9 @@ class AIHubExposeImage(AIHubExposeBase):
 				"pos_y": self.value_pos_y,
 				"layer_id": self.value_layer_id
 			}
+		if self.info_only_mode:
+			dictValue["value_width"] = self.value_width
+			dictValue["value_height"] = self.value_height
 		if self.is_frame:
 			del dictValue["layer_id"]
 			del dictValue["pos_x"]
@@ -883,13 +934,24 @@ class AIHubExposeImage(AIHubExposeBase):
 			dictValue["total_frames"] = self.total_frames_widget.get_value()
 		return dictValue
 	
-	def get_value(self):
+	def get_value(self, half_size=False):
 		base_value = self.get_value_base()
 		# remove _local_file from the value
 		if base_value is not None and "_local_file" in base_value:
 			del base_value["_local_file"]
 		if base_value is not None and self.info_only_mode:
 			del base_value["local_file"]
+
+		if half_size:
+			if "pos_x" in base_value:
+				base_value["pos_x"] = base_value["pos_x"] // 2
+			if "pos_y" in base_value:
+				base_value["pos_y"] = base_value["pos_y"] // 2
+			if "value_width" in base_value:
+				base_value["value_width"] = base_value["value_width"] // 2
+			if "value_height" in base_value:
+				base_value["value_height"] = base_value["value_height"] // 2
+
 		return base_value
 	
 	def current_image_changed(self, image, model):
@@ -907,7 +969,7 @@ class AIHubExposeImage(AIHubExposeBase):
 
 		self.check_validity(self.get_value())
 
-	def after_ui_built(self):
+	def after_ui_built(self, workflow_elements_all):
 		self.check_validity(self.get_value())
 		if (self.is_using_internal_file()):
 			pass
@@ -972,95 +1034,191 @@ class AIHubExposeFrame(AIHubExposeImage):
 	def __init__(self, id, data, workflow_context, workflow_id, workflow, project_current_timeline_path, project_saved_path, apinfo):
 		super().__init__(id, data, workflow_context, workflow_id, workflow, project_current_timeline_path, project_saved_path, apinfo, is_frame=True)
 
-class AIHubExposeImageBatch(AIHubExposeBase):
-	def get_special_priority(self):
-		return 100
-	
-	def get_widget_for_expose(self, expose):
-		usual_widget = expose.get_widget()
-
-		# now we need to extend this widget with a delete button on the right
-		delete_button = Gtk.Button(label="Delete")
-		delete_button.connect("clicked", self.on_delete_expose, expose)
-		# add the delete button to the right of the usual widget
-		vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-		vbox.pack_start(usual_widget, True, True, 0)
-		vbox.pack_start(delete_button, False, False, 0)
-
-		return vbox
-
-	def __init__(self, id, data, workflow_context, workflow_id, workflow, project_current_timeline_path, project_saved_path, apinfo):
+class AIHubExposeFileBase(AIHubExposeBase):
+	def __init__(self, id, data, workflow_context, workflow_id, workflow, project_current_timeline_path, project_saved_path, apinfo, select_button_label=None, file_types=None, file_types_label=None):
 		super().__init__(id, data, workflow_context, workflow_id, workflow, project_current_timeline_path, project_saved_path, apinfo)
 
-		self.label: Gtk.Label = None
-		self.box: Gtk.Box = None
-		self.innerbox: Gtk.Box = None
+		self.file_types = file_types if file_types is not None else ["*"]
+		self.file_types_label = file_types_label if file_types_label is not None else _("Allowed files")
+		self.selected_filename = None
+		self.uploaded_file_path = None
 
-		self.list_of_exposes = []
-		self.list_of_expose_widgets = []
+		self.label: Gtk.Label = None
+		self.error_label: AIHubLabel = None
+		
+		self.select_button = Gtk.Button(label=select_button_label, xalign=0)
+		self.select_button.connect("clicked", self.on_file_chooser_clicked)
+
+		known_tooltip = None
+
+		if ("tooltip" in self.data and self.data["tooltip"] is not None and self.data["tooltip"] != ""):
+			known_tooltip = self.data["tooltip"]
+
+		if known_tooltip is not None:
+			self.select_button.set_tooltip_text(known_tooltip)
+
+		if (
+			self.initial_value is not None and
+			isinstance(self.initial_value, dict) and "_local_file" in self.initial_value and 
+			os.path.exists(self.initial_value["_local_file"])
+		):
+			self.selected_filename = self.initial_value["_local_file"]
+
+			self.select_button.set_label(os.path.basename(self.selected_filename) + " (" + _("Click to clear") + ")")
+
+		self.box: Gtk.Box = None
 
 		self.label = Gtk.Label(self.data["label"], xalign=0)
 		self.label.set_size_request(400, -1)
 		self.label.set_line_wrap(True)
 		self.box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
 		self.box.pack_start(self.label, False, False, 0)
+		self.box.pack_start(self.select_button, False, False, 0)
+		self.error_label = AIHubLabel("", "error")
+		self.success_label = AIHubLabel("", "success")
+		self.box.pack_start(self.success_label.get_widget(), False, False, 0)
+		self.box.pack_start(self.error_label.get_widget(), False, False, 0)
+		self.error_label.hide()
+		self.success_label.hide()
 
-		self.innerbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-		self.box.pack_start(self.innerbox, True, True, 0)
+	def on_file_chooser_clicked(self, widget):
+		dialog = Gtk.FileChooserDialog(
+			title=self.data["label"],
+			parent=None,
+			action=Gtk.FileChooserAction.OPEN,
+			buttons=(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, Gtk.STOCK_OPEN, Gtk.ResponseType.OK)
+		)
+		Gtk.Window.set_keep_above(dialog, True)
 
-		# ensure to add spacing from the top some margin top
-		self.box.set_margin_top(10)
+		file_filter = Gtk.FileFilter()
+		file_filter.set_name(self.file_types_label)
+		for pattern in self.file_types:
+			file_filter.add_pattern(pattern)
+		dialog.add_filter(file_filter)
 
-		if self.initial_value is not None and isinstance(self.initial_value, list):
-			# we do not need to read this value because the children will do it
-			# straight from the file
-			for i in range(0, len(self.initial_value)):
-				expose = AIHubExposeImage([self.id, i], {
-					"label": _("Image {}").format(i+1),
-					"type": "upload",
-					"tooltip": self.data["tooltip"] if "tooltip" in self.data else None,
-				}, self.workflow_context, self.workflow_id, self.workflow, self.projectname)
+		response = dialog.run()
+		if response == Gtk.ResponseType.OK:
+			filename = dialog.get_filename()
+			self.select_button.set_label(os.path.basename(filename) + " (" + _("Click to change") + ")")
+			self.selected_filename = filename
+			self.on_file_selected()
+		dialog.destroy()
 
-				self.list_of_exposes.append(expose)
-				new_widget = self.get_widget_for_expose(expose)
-				self.list_of_expose_widgets.append(new_widget)
-
-				self.innerbox.pack_start(new_widget, True, True, 0)
-
-	def on_delete_expose(self, expose):
-		widget_of_expose = None
-		for i in range(0, len(self.list_of_exposes)):
-			if self.list_of_exposes[i] == expose:
-				widget_of_expose = self.list_of_expose_widgets[i]
-				self.list_of_expose_widgets.pop(i)
-				break
-	
-		self.list_of_exposes.remove(expose)
-		# remove the widget from the Gtk box
-		self.innerbox.remove(widget_of_expose)
-
-		for i in range(0, len(self.list_of_exposes)):
-			expose = self.list_of_exposes[i]
-			expose.change_id([self.id, i])
-			expose.change_label(_("Image {}").format(i+1))
-
-	def on_add_expose(self):
-		new_expose = AIHubExposeImage([self.id, len(self.list_of_exposes)], {
-			"label": _("Image {}").format(len(self.list_of_exposes)+1),
-			"type": "upload",
-			"tooltip": self.data["tooltip"] if "tooltip" in self.data else None,
-		}, self.workflow_context, self.workflow_id, self.workflow, self.projectname)
-		self.list_of_exposes.append(new_expose)
-		self.innerbox.pack_start(new_expose.get_widget(), True, True, 0)
+	def on_file_selected(self):
+		self.on_change(self.get_value_base())
+		self.error_label.hide()
+		self.success_label.hide()
 
 	def get_widget(self):
 		return self.box
 
-	def get_value(self):
-		return self.value
+	def get_value_base(self):
+		return {
+			"_local_file": self.selected_filename,
+			"local_file": self.uploaded_file_path,
+		}
 	
+	def get_value(self, half_size=False):
+		base_value = self.get_value_base()
+		# remove _local_file from the value
+		if base_value is not None and "_local_file" in base_value:
+			del base_value["_local_file"]
+		return base_value
+	
+	def check_validity(self, value):
+		if (self.selected_filename is None or not os.path.exists(self.selected_filename)):
+			self.error_label.show()
+			self.success_label.hide()
+			self.error_label.set_text(_("Please select a valid file"))
+		else:
+			self.success_label.hide()
+			self.error_label.hide()
+
 	def can_run(self):
-		return self.data["maxlen"] >= len(self.list_of_exposes) >= self.data["minlen"] and all([expose.can_run() for expose in self.list_of_exposes])
+		return self.selected_filename is not None and os.path.exists(self.selected_filename)
+	
+	def upload_binary(self, ws, relegator=None, half_size=False):
+		# now we need to make a calculation for a hash of the file to upload
+		hash_md5 = hashlib.md5()
+		# make a new binary data to upload
+		file_data = b""
+		with open(self.selected_filename, "rb") as f:
+			data = f.read()  # read whole thing
+			file_data = data
+			hash_md5.update(data)
+				
+		upload_file_hash = hash_md5.hexdigest()
+
+		# now we can upload the file, using that hash as filename, if the file does not exist
+		binary_header = {
+			"type": "FILE_UPLOAD",
+			"filename": upload_file_hash,
+			"workflow_id": self.workflow_id,
+			"if_not_exists": True
+		}
+
+		relegator.reset()
+
+		ws.send(json.dumps(binary_header))
+
+		if not relegator.wait(10):
+			return _("Error uploading file {}: Timeout waiting for server response").format(self.selected_filename)
+		
+		response_data = relegator.last_response
+
+		if (response_data["type"] == "ERROR"):
+			return _("Error uploading file {}: {}").format(self.selected_filename, response_data.get('message', _('Unknown error')))
+		elif (response_data["type"] == "UPLOAD_ACK"):
+			try:
+				relegator.reset()
+				ws.send_bytes(file_data)
+				
+				# wait for the upload ack
+				if not relegator.wait(10):
+					return _("Error uploading file {}: Timeout waiting for server response after sending data").format(self.selected_filename)
+
+				response_data = relegator.last_response
+
+				if (response_data["type"] == "ERROR"):
+					return _("Error uploading file {}: {}").format(self.selected_filename, response_data.get('message', _('Unknown error')))
+				elif (response_data["type"] == "FILE_UPLOAD_SUCCESS"):
+					filename = response_data.get("file", None)
+					self.uploaded_file_path = filename
+
+					if self.uploaded_file_path is None:
+						return _("Error uploading file {}: Server did not return uploaded file path").format(self.selected_filename)
+
+					# upload successful
+					return True
+				# unexpected response
+				return _("Error uploading file {}: Unexpected server response").format(self.selected_filename)
+			except Exception as e:
+				return _("Error uploading file {}: {}").format(self.selected_filename, str(e))
+		elif (response_data["type"] == "FILE_UPLOAD_SKIP"):
+			# file already exists on server
+			filename = response_data.get("file", None)
+			self.uploaded_file_path = filename
+			if self.uploaded_file_path is None:
+				return _("Error uploading file {}: Server did not return uploaded file path").format(self.selected_filename)
+			return True
+
+		return _("Error uploading file {}: Unexpected server response").format(self.selected_filename)
+	
+class AIHubExposeAudio(AIHubExposeFileBase):
+	def __init__(self, id, data, workflow_context, workflow_id, workflow, project_current_timeline_path, project_saved_path, apinfo):
+		super().__init__(id, data, workflow_context, workflow_id, workflow, project_current_timeline_path, project_saved_path, apinfo,
+			select_button_label=_("Select an audio file"),
+			file_types=["*.mp3", "*.wav", "*.flac", "*.ogg"],
+			file_types_label=_("Audio files")
+		)
+
+class AIHubExposeVideo(AIHubExposeFileBase):
+	def __init__(self, id, data, workflow_context, workflow_id, workflow, project_current_timeline_path, project_saved_path, apinfo):
+		super().__init__(id, data, workflow_context, workflow_id, workflow, project_current_timeline_path, project_saved_path, apinfo,
+			select_button_label=_("Select a video file"),
+			file_types=["*.mp4", "*.mov", "*.avi", "*.mkv"],
+			file_types_label=_("Video files")
+		)
 
 class AIHubExposeInteger(AIHubExposeBase):
 	def __init__(self, id, data, workflow_context, workflow_id, workflow, project_current_timeline_path, project_saved_path, apinfo):
@@ -1074,9 +1232,9 @@ class AIHubExposeInteger(AIHubExposeBase):
 		# make a numeric entry that only allows for integer values
 		expected_step = data["step"] if "step" in data else 1
 		adjustment = Gtk.Adjustment(
-			value=self.initial_value,
-			lower=data["min"] if "min" in data else 0,
-			upper=data["max"] if "max" in data else 100,
+			value=int(self.initial_value) if self.initial_value is not None else (data["min"] if "min" in data else 0),
+			lower=data["min"] if "min" in data else -0x8000000000000000,
+			upper=data["max"] if "max" in data else 0xffffffffffffffff,
 			step_increment=expected_step,
 		)
 		self.widget = Gtk.SpinButton(adjustment=adjustment, climb_rate=1, digits=0, numeric=True)
@@ -1104,7 +1262,7 @@ class AIHubExposeInteger(AIHubExposeBase):
 		# ensure to add spacing from the top some margin top
 		self.box.set_margin_top(10)
 
-	def get_value(self):
+	def get_value(self, half_size=False):
 		return self.widget.get_value_as_int()
 
 	def get_widget(self):
@@ -1127,7 +1285,7 @@ class AIHubExposeInteger(AIHubExposeBase):
 		else:
 			self.error_label.hide()
 
-	def after_ui_built(self):
+	def after_ui_built(self, workflow_elements_all):
 		self.check_validity(self.get_value())
 
 	def can_run(self):
@@ -1135,6 +1293,34 @@ class AIHubExposeInteger(AIHubExposeBase):
 		max = self.data["max"] if "max" in self.data else None
 		value = self.get_value()
 		return (min is None or value >= min) and (max is None or value <= max)
+	
+	def add_max_widget_constraint(self, max_widget):
+		# when the max_widget value changes, we need to update our max value
+		def on_max_widget_change(widget):
+			new_max = widget.get_value_as_int()
+			adjustment: Gtk.Adjustment = self.widget.get_adjustment()
+			adjustment.set_upper(new_max)
+			self.data["max"] = new_max
+			# if current value is greater than new max, set it to new max
+			if self.widget.get_value_as_int() > new_max:
+				self.widget.set_value(new_max)
+			self.check_validity(self.get_value())
+		
+		max_widget.widget.connect("value-changed", on_max_widget_change)
+
+	def add_min_widget_constraint(self, min_widget):
+		# when the min_widget value changes, we need to update our min value
+		def on_min_widget_change(widget):
+			new_min = widget.get_value_as_int()
+			adjustment: Gtk.Adjustment = self.widget.get_adjustment()
+			adjustment.set_lower(new_min)
+			self.data["min"] = new_min
+			# if current value is less than new min, set it to new min
+			if self.widget.get_value_as_int() < new_min:
+				self.widget.set_value(new_min)
+			self.check_validity(self.get_value())
+		
+		min_widget.widget.connect("value-changed", on_min_widget_change)
 
 class AIHubExposeSeed(AIHubExposeBase):
 	def __init__(self, id, data, workflow_context, workflow_id, workflow, project_current_timeline_path, project_saved_path, apinfo):
@@ -1217,7 +1403,7 @@ class AIHubExposeSeed(AIHubExposeBase):
 			"value": self.widget_value.get_active_id()
 		}
 	
-	def get_value(self):
+	def get_value(self, half_size=False):
 		current_selection = self.widget_value.get_active_id()
 		if current_selection == "random":
 			return random.randint(0, 0xffffffffffffffff)
@@ -1248,7 +1434,7 @@ class AIHubExposeSeed(AIHubExposeBase):
 		else:
 			self.error_label.hide()
 
-	def after_ui_built(self):
+	def after_ui_built(self, workflow_elements_all):
 		self.ensure_value_fixed_visibility_state()
 		self.check_validity(self.get_value_internal())
 
@@ -1263,9 +1449,9 @@ class AIHubExposeFloat(AIHubExposeBase):
 		# make a numeric entry that only allows for float values
 		expected_step = data["step"] if "step" in data else 0.1
 		adjustment = Gtk.Adjustment(
-			value=self.initial_value,
-			lower=data["min"] if "min" in data else 0,
-			upper=data["max"] if "max" in data else 100,
+			value=float(self.initial_value) if self.initial_value is not None else (data["min"] if "min" in data else 0.0),
+			lower=data["min"] if "min" in data else -1e10,
+			upper=data["max"] if "max" in data else 1e10,
 			step_increment=expected_step,
 		)
 		# check how many decimal places are in expected_step
@@ -1301,7 +1487,7 @@ class AIHubExposeFloat(AIHubExposeBase):
 		# ensure to add spacing from the top some margin top
 		self.box.set_margin_top(10)
 
-	def get_value(self):
+	def get_value(self, half_size=False):
 		return self.widget.get_value()
 
 	def get_widget(self):
@@ -1322,7 +1508,7 @@ class AIHubExposeFloat(AIHubExposeBase):
 		else:
 			self.error_label.hide()
 
-	def after_ui_built(self):
+	def after_ui_built(self, workflow_elements_all):
 		self.check_validity(self.get_value())
 
 	def can_run(self):
@@ -1331,8 +1517,36 @@ class AIHubExposeFloat(AIHubExposeBase):
 		value = self.get_value()
 		return (min is None or value >= min) and (max is None or value <= max)
 
-	def after_ui_built(self):
+	def after_ui_built(self, workflow_elements_all):
 		self.check_validity(self.get_value())
+
+	def add_max_widget_constraint(self, max_widget):
+		# when the max_widget value changes, we need to update our max value
+		def on_max_widget_change(widget):
+			new_max = widget.get_value()
+			adjustment: Gtk.Adjustment = self.widget.get_adjustment()
+			adjustment.set_upper(new_max)
+			self.data["max"] = new_max
+			# if current value is greater than new max, set it to new max
+			if self.widget.get_value() > new_max:
+				self.widget.set_value(new_max)
+			self.check_validity(self.get_value())
+		
+		max_widget.widget.connect("value-changed", on_max_widget_change)
+
+	def add_min_widget_constraint(self, min_widget):
+		# when the min_widget value changes, we need to update our min value
+		def on_min_widget_change(widget):
+			new_min = widget.get_value()
+			adjustment: Gtk.Adjustment = self.widget.get_adjustment()
+			adjustment.set_lower(new_min)
+			self.data["min"] = new_min
+			# if current value is less than new min, set it to new min
+			if self.widget.get_value() < new_min:
+				self.widget.set_value(new_min)
+			self.check_validity(self.get_value())
+		
+		min_widget.widget.connect("value-changed", on_min_widget_change)
 
 class AIHubExposeCfg(AIHubExposeFloat):
 	def on_model_changed(self, model):
@@ -1363,6 +1577,10 @@ class AIHubExposeBoolean(AIHubExposeBase):
 		self.widget: Gtk.CheckButton = None
 		self.box: Gtk.Box = None
 
+		self.siblings = []
+		self.one_true = False
+		self.one_false = False
+
 		self.widget = Gtk.CheckButton()
 		self.widget.set_active(self.initial_value)
 
@@ -1383,7 +1601,7 @@ class AIHubExposeBoolean(AIHubExposeBase):
 		# ensure to add spacing from the top some margin top
 		self.box.set_margin_top(10)
 
-	def get_value(self):
+	def get_value(self, half_size=False):
 		return self.widget.get_active()
 
 	def get_widget(self):
@@ -1392,6 +1610,12 @@ class AIHubExposeBoolean(AIHubExposeBase):
 	def on_change_value(self, widget):
 		self.on_change(widget.get_value())
 
+		for sibling in self.siblings:
+			if self.one_true and self.get_value():
+				sibling.widget.set_active(False)
+			if self.one_false and not self.get_value():
+				sibling.widget.set_active(True)
+
 	def check_validity(self, value):
 		if not isinstance(value, bool):
 			self.error_label.show()
@@ -1399,11 +1623,20 @@ class AIHubExposeBoolean(AIHubExposeBase):
 		else:
 			self.error_label.hide()
 
-	def after_ui_built(self):
+	def after_ui_built(self, workflow_elements_all):
 		self.check_validity(self.get_value())
 
 	def can_run(self):
 		return not isinstance(self.get_value(), bool)
+	
+	def add_interacting_sibling(self, sibling):
+		self.siblings.append(sibling)
+
+	def mark_as_one_true(self):
+		self.one_true = True
+
+	def mark_as_one_false(self):
+		self.one_false = True
 
 class AIHubExposeString(AIHubExposeBase):
 	def get_special_priority(self):
@@ -1425,7 +1658,7 @@ class AIHubExposeString(AIHubExposeBase):
 
 		if self.is_multiline:
 			buffer = self.widget.get_buffer()
-			buffer.set_text(self.initial_value)
+			buffer.set_text(self.initial_value or "")
 
 			# prevent the text view from growing horizontally
 			self.widget.set_size_request(400, 100)
@@ -1434,7 +1667,7 @@ class AIHubExposeString(AIHubExposeBase):
 			# add onchange event
 			buffer.connect("changed", self.on_change_value)
 		else:
-			self.widget.set_text(self.initial_value)
+			self.widget.set_text(self.initial_value or "")
 			# add on change event
 			self.widget.connect("changed", self.on_change_value)
 
@@ -1456,7 +1689,7 @@ class AIHubExposeString(AIHubExposeBase):
 		# ensure to add spacing from the top some margin top
 		self.box.set_margin_top(10)
 
-	def get_value(self):
+	def get_value(self, half_size=False):
 		if (self.is_multiline):
 			return self.widget.get_buffer().get_text(
 				self.widget.get_buffer().get_start_iter(),
@@ -1471,24 +1704,46 @@ class AIHubExposeString(AIHubExposeBase):
 	def on_change_value(self, widget):
 		self.on_change(self.get_value())
 
-	def after_ui_built(self):
+	def after_ui_built(self, workflow_elements_all):
 		self.check_validity(self.get_value())
 
 	def check_validity(self, value):
 		if not isinstance(value, str):
 			self.error_label.show()
 			self.error_label.set_text(_("Value must be a string"))
-		elif len(value) > self.data["maxlen"]:
+		elif "maxlen" in self.data and len(value) > self.data["maxlen"]:
 			self.error_label.show()
 			self.error_label.set_text(_("Value must be at most {} characters long").format(self.data['maxlen']))
-		elif len(value) < self.data["minlen"]:
+		elif "minlen" in self.data and len(value) < self.data["minlen"]:
 			self.error_label.show()
 			self.error_label.set_text(_("Value must be at least {} characters long").format(self.data['minlen']))
 		else:
 			self.error_label.hide()
 
 	def can_run(self):
-		return len(self.get_value()) <= self.data["maxlen"] and len(self.get_value()) >= self.data["minlen"]
+		if "maxlen" in self.data and len(self.get_value()) > self.data["maxlen"]:
+			return False
+		if "minlen" in self.data and len(self.get_value()) < self.data["minlen"]:
+			return False
+		return True
+	
+	def add_maxlen_widget_constraint(self, maxlen_widget):
+		# when the maxlen_widget value changes, we need to update our maxlen value
+		def on_maxlen_widget_change(widget):
+			new_maxlen = widget.get_value()
+			self.data["maxlen"] = new_maxlen
+			self.check_validity(self.get_value())
+		
+		maxlen_widget.widget.connect("value-changed", on_maxlen_widget_change)
+
+	def add_minlen_widget_constraint(self, minlen_widget):
+		# when the minlen_widget value changes, we need to update our minlen value
+		def on_minlen_widget_change(widget):
+			new_minlen = widget.get_value()
+			self.data["minlen"] = new_minlen
+			self.check_validity(self.get_value())
+		
+		minlen_widget.widget.connect("value-changed", on_minlen_widget_change)
 
 class AIHubExposeStringSelection(AIHubExposeBase):
 	def __init__(self, id, data, workflow_context, workflow_id, workflow, project_current_timeline_path, project_saved_path, apinfo):
@@ -1544,7 +1799,7 @@ class AIHubExposeStringSelection(AIHubExposeBase):
 		self.box.pack_start(self.error_label.get_widget(), False, False, 0)
 		self.box.pack_start(self.widget, True, True, 0)
 
-	def get_value(self):
+	def get_value(self, half_size=False):
 		return self.widget.get_active_id()
 
 	def get_widget(self):
@@ -1556,7 +1811,7 @@ class AIHubExposeStringSelection(AIHubExposeBase):
 	def can_run(self):
 		return self.get_value() in self.options
 	
-	def after_ui_built(self):
+	def after_ui_built(self, workflow_elements_all):
 		self.check_validity(self.get_value())
 
 	def check_validity(self, value):
@@ -1605,7 +1860,7 @@ class AIHubExposeProjectFileBase(AIHubExposeBase):
 
 		self.uploaded_file_path: str = None
 
-	def upload_binary(self, ws, relegator=None):
+	def upload_binary(self, ws, relegator=None, half_size=False):
 		file_name = self.data.get("file_name", None)
 		batch_index = self.data.get("batch_index", "")
 		file_to_upload = os.path.join(self.project_current_timeline_path, file_name)
@@ -1703,7 +1958,7 @@ class AIHubExposeProjectFileBase(AIHubExposeBase):
 
 		return _("Error uploading file {}: Unexpected server response").format(file_to_upload)
 	
-	def get_value(self):
+	def get_value(self, half_size=False):
 		return {
 			"local_file": self.uploaded_file_path,
 		}
@@ -1714,7 +1969,7 @@ class AIHubExposeProjectFilesBase(AIHubExposeBase):
 
 		self.uploaded_file_paths: list[str] = []
 
-	def upload_binary(self, ws, relegator=None):
+	def upload_binary(self, ws, relegator=None, half_size=False):
 		file_name = self.data.get("file_name", None)
 		indexes = self.data.get("indexes", "")
 		files_to_upload = []
@@ -1849,41 +2104,41 @@ class AIHubExposeProjectFilesBase(AIHubExposeBase):
 
 			return _("Error uploading file {}: Unexpected server response").format(file_to_upload)
 	
-	def get_value(self):
+	def get_value(self, half_size=False):
 		return {
 			"local_files": self.uploaded_file_paths,
 		}
 
 class AIHubExposeProjectConfigBase(AIHubExposeBase):
-	def get_value(self):
+	def get_value(self, half_size=False):
 		value = self.read_project_config_json(self.data["field"])
 		if value is None:
 			value = self.data["default"]
 		return value
 
 class AIHubExposeProjectConfigString(AIHubExposeProjectConfigBase):
-	def get_value(self):
+	def get_value(self, half_size=False):
 		parent_value = super().get_value()
 		if not isinstance(parent_value, str):
 			return self.data["default"]
 		return parent_value
 	
 class AIHubExposeProjectConfigInteger(AIHubExposeProjectConfigBase):
-	def get_value(self):
+	def get_value(self, half_size=False):
 		parent_value = super().get_value()
 		if not isinstance(parent_value, int):
 			return self.data["default"]
 		return parent_value
 	
 class AIHubExposeProjectConfigBoolean(AIHubExposeProjectConfigBase):
-	def get_value(self):
+	def get_value(self, half_size=False):
 		parent_value = super().get_value()
 		if not isinstance(parent_value, bool):
 			return self.data["default"]
 		return parent_value
 	
 class AIHubExposeProjectConfigFloat(AIHubExposeProjectConfigBase):
-	def get_value(self):
+	def get_value(self, half_size=False):
 		parent_value = super().get_value()
 		if not isinstance(parent_value, float):
 			return self.data["default"]
@@ -1985,7 +2240,7 @@ class AIHubExposeLora(AIHubExposeBase):
 		self.strength = widget.get_value()
 		self.on_change(self.get_value())
 
-	def get_value(self):
+	def get_value(self, half_size=False):
 		return {
 			"strength": self.slider.get_value(),
 			"enabled": self.enabled,
@@ -2023,7 +2278,7 @@ class AIHubExposeLora(AIHubExposeBase):
 		lora_data = self.data["lora"]
 		return lora_data.get("use_loader_model_only", False)
 
-	def after_ui_built(self):
+	def after_ui_built(self, workflow_elements_all):
 		if self.no_image:
 			self.image.hide()
 		else:
@@ -2336,7 +2591,7 @@ class AIHubExposeModel(AIHubExposeBase):
 			# cancel pressed destroy the dialog
 			dialog.destroy()
 		
-	def get_value(self):
+	def get_value(self, half_size=False):
 		if self.model is None:
 			return None
 		
@@ -2393,9 +2648,9 @@ class AIHubExposeModel(AIHubExposeBase):
 				return False
 		return self.model is not None
 	
-	def after_ui_built(self):
+	def after_ui_built(self, workflow_elements_all):
 		for lora in self.lorasobjects.values():
-			lora.after_ui_built()
+			lora.after_ui_built(workflow_elements_all)
 
 		if self.data.get("disable_model_selection", False):
 			if self.data["model"] is None or not self.data["model"]:
@@ -2412,6 +2667,201 @@ class AIHubExposeModel(AIHubExposeBase):
 			self.error_label.set_text(_("There are no models available for this workflow"))
 		else:
 			self.error_label.hide()
+
+BATCH_EXPOSE_METADATA_TYPE_TO_EXPOSE_CLASS = {
+	"INT": AIHubExposeInteger,
+	"FLOAT": AIHubExposeFloat,
+	"STRING": AIHubExposeString,
+	"BOOLEAN": AIHubExposeBoolean,
+}
+
+class AIHubExposeImageBatch(AIHubExposeBase):
+	def get_special_priority(self):
+		return 100
+	
+	def create_widget_for_expose(self, expose):
+		usual_widget = expose.get_widget()
+
+		# now we need to extend this widget with a delete button on the right
+		delete_button = Gtk.Button(label="Delete")
+		delete_button.connect("clicked", self.on_delete_expose, expose)
+		# add the delete button to the right of the usual widget
+		vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+		vbox.pack_start(usual_widget, True, True, 0)
+
+		metadata_fields_text = self.data.get("metadata_fields", "")
+		if metadata_fields_text is None or metadata_fields_text.strip() == "":
+			return vbox
+		metadata_fields_splitted = [field.strip() for field in metadata_fields_text.split("\n")]
+		metadata_fields_label_text = self.data.get("metadata_fields_label", "")
+		metadata_fields_label_splitted = [label.strip() for label in metadata_fields_label_text.split("\n")]
+		
+		if metadata_fields_label_text is not None and metadata_fields_label_text.strip() != "":
+			expose_metadata_list = []
+			for field in range(0, len(metadata_fields_splitted)):
+				field_label = metadata_fields_label_splitted[field] if field < len(metadata_fields_label_splitted) else ""
+				field_structure_splitted = [f.strip() for f in metadata_fields_splitted[field].split(" ") if f.strip() != ""]
+
+				type_of_field = field_structure_splitted[1] if len(field_structure_splitted) >= 2 else "INT"
+				global BATCH_EXPOSE_METADATA_TYPE_TO_EXPOSE_CLASS
+				ExposeClass = BATCH_EXPOSE_METADATA_TYPE_TO_EXPOSE_CLASS.get(type_of_field, "AIHubExposeString")
+				data = {
+					"label": field_label,
+					"tooltip": None,
+				}
+				for extra_param in field_structure_splitted[2:]:
+					if extra_param.startswith("MAX:"):
+						default_value = extra_param[len("MAX:"):].strip()
+						try:
+							data["max"] = int(default_value) if type_of_field == "INT" else float(default_value)
+						except ValueError:
+							pass
+					elif extra_param.startswith("MIN:"):
+						default_value = extra_param[len("MIN:"):].strip()
+						try:
+							data["min"] = int(default_value) if type_of_field == "INT" else float(default_value)
+						except ValueError:
+							pass
+					elif extra_param.startswith("MAXLEN:"):
+						default_value = extra_param[len("MAXLEN:"):].strip()
+						try:
+							data["maxlen"] = int(default_value)
+						except ValueError:
+							pass
+					elif extra_param.startswith("MINLEN:"):
+						default_value = extra_param[len("MINLEN:"):].strip()
+						try:
+							data["minlen"] = int(default_value)
+						except ValueError:
+							pass
+					elif extra_param == "MULTILINE":
+						data["multiline"] = True
+			
+				metadata_expose = ExposeClass([self.id, len(self.list_of_expose_metadata_subexposes), "metadata", field_structure_splitted[0]], data, self.workflow_context, self.workflow_id, self.workflow, self.project_current_timeline_path, self.project_saved_path, self.apinfo)
+				expose_metadata_list.append(metadata_expose)
+				metadata_widget = metadata_expose.get_widget()
+				vbox.pack_start(metadata_widget, False, False, 0)
+			self.list_of_expose_metadata_subexposes.append(expose_metadata_list)
+
+		vbox.pack_start(delete_button, False, False, 0)
+		return vbox
+
+	def __init__(self, id, data, workflow_context, workflow_id, workflow, project_current_timeline_path, project_saved_path, apinfo):
+		super().__init__(id, data, workflow_context, workflow_id, workflow, project_current_timeline_path, project_saved_path, apinfo)
+
+		self.label: Gtk.Label = None
+		self.box: Gtk.Box = None
+		self.innerbox: Gtk.Box = None
+
+		self.list_of_exposes = []
+		self.list_of_expose_widgets = []
+		self.list_of_expose_metadata_subexposes = []
+
+		self.label = Gtk.Label(self.data["label"], xalign=0)
+		self.label.set_size_request(400, -1)
+		self.label.set_line_wrap(True)
+		self.box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+		self.box.pack_start(self.label, False, False, 0)
+
+		self.innerbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+		self.box.pack_start(self.innerbox, True, True, 0)
+
+		# ensure to add spacing from the top some margin top
+		self.box.set_margin_top(10)
+
+		if self.initial_value is not None and isinstance(self.initial_value, list):
+			# we do not need to read this value because the children will do it
+			# straight from the file
+			for i in range(0, len(self.initial_value)):
+				expose = AIHubExposeImage([self.id, i, "value"], {
+					"label": _("Image {}").format(i+1),
+					"type": "upload",
+					"tooltip": self.data["tooltip"] if "tooltip" in self.data else None,
+				}, self.workflow_context, self.workflow_id, self.workflow, self.project_current_timeline_path, self.project_saved_path, self.apinfo)
+
+				self.list_of_exposes.append(expose)
+				new_widget = self.create_widget_for_expose(expose)
+				self.list_of_expose_widgets.append(new_widget)
+
+				self.innerbox.pack_start(new_widget, True, True, 0)
+
+		# add a spacer
+		spacer = Gtk.Label("", xalign=0)
+		spacer.set_size_request(400, 10)
+		self.box.pack_start(spacer, False, False, 0)
+
+		add_button = Gtk.Button(label=_("Add Image"))
+		add_button.connect("clicked", self.on_add_expose)
+		self.box.pack_start(add_button, False, False, 0)
+
+	def on_delete_expose(self, widget, expose):
+		widget_of_expose = None
+		for i in range(0, len(self.list_of_exposes)):
+			if self.list_of_exposes[i] == expose:
+				widget_of_expose = self.list_of_expose_widgets[i]
+				self.list_of_expose_widgets.pop(i)
+				self.list_of_expose_metadata_subexposes.pop(i)
+				break
+
+		if not widget_of_expose:
+			return
+	
+		self.list_of_exposes.remove(expose)
+		# remove the widget from the Gtk box
+		self.innerbox.remove(widget_of_expose)
+
+		self.on_change([])
+
+		for i in range(0, len(self.list_of_exposes)):
+			expose = self.list_of_exposes[i]
+			expose.change_id([self.id, i, "value"])
+			expose.change_label(_("Image {}").format(i+1))
+			# specific to image expose
+			expose.on_change(expose.get_value_base())
+
+			metadata_fields_elements = self.list_of_expose_metadata_subexposes[i]
+			for element in metadata_fields_elements:
+				current_id = element.get_id()
+				element.change_id([self.id, i, "metadata", current_id[-1]])
+				element.on_change_value(None)
+ 
+	def on_add_expose(self, widget):
+		new_expose = AIHubExposeImage([self.id, len(self.list_of_exposes), "value"], {
+			"label": _("Image {}").format(len(self.list_of_exposes)+1),
+			"type": "upload",
+			"tooltip": self.data["tooltip"] if "tooltip" in self.data else None,
+		}, self.workflow_context, self.workflow_id, self.workflow, self.project_current_timeline_path, self.project_saved_path, self.apinfo)
+		self.list_of_exposes.append(new_expose)
+		new_widget = self.create_widget_for_expose(new_expose)
+		self.list_of_expose_widgets.append(new_widget)
+		self.innerbox.pack_start(new_widget, True, True, 0)
+		new_widget.show_all()
+		new_expose.after_ui_built(None)
+		for element in self.list_of_expose_metadata_subexposes[-1]:
+			element.get_widget().show_all()
+			element.after_ui_built(None)
+
+	def get_widget(self):
+		return self.box
+
+	def get_value(self, half_size=False):
+		return {
+			"local_files": [expose.get_value().get("local_file", None) for expose in self.list_of_exposes],
+			"metadata": json.dumps(self.get_metadata())
+		}
+	
+	def get_metadata(self):
+		return []
+	
+	def upload_binary(self, ws, relegator=None, half_size=False):
+		for expose in self.list_of_exposes:
+			result = expose.upload_binary(ws, relegator, half_size=half_size)
+			if result is not True:
+				return result
+		return True
+	
+	def can_run(self):
+		return self.data["maxlen"] >= len(self.list_of_exposes) >= self.data["minlen"] and all([expose.can_run() for expose in self.list_of_exposes])
 
 EXPOSES = {
 	"AIHubExposeInteger": AIHubExposeInteger,
@@ -2436,8 +2886,8 @@ EXPOSES = {
 	# it is configured in the backend
 	"AIHubExposeModelSimple": AIHubExposeModel,
 
-	"AIHubExposeAudio": None,
-	"AIHubExposeVideo": None,
+	"AIHubExposeAudio": AIHubExposeAudio,
+	"AIHubExposeVideo": AIHubExposeVideo,
 	"AIHubExposeFrame": AIHubExposeFrame,
 
 	"AIHubExposeProjectAudio": AIHubExposeProjectFileBase,

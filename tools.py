@@ -200,9 +200,30 @@ def open_project_file_as_image(finalpath):
 	
 	return None
 
+def remove_batch_files(filename, timeline_path, project_is_real):
+	# first lets get the folder for the project files
+	project_folder = get_project_folder_in_timeline(timeline_path, project_is_real)
+	if not os.path.exists(project_folder):
+		os.makedirs(project_folder, exist_ok=True)
+	files_folder = os.path.join(project_folder, "files")
+	if not os.path.exists(files_folder):
+		os.makedirs(files_folder, exist_ok=True)
+
+	base, ext = os.path.splitext(filename)
+	# scan the files folder for files that match the batch pattern
+	for fname in os.listdir(files_folder):
+		if fname.startswith(f"{base}_") and fname.endswith(ext):
+			filepath = os.path.join(files_folder, fname)
+			suffix = fname[len(base) + 1 : -len(ext)]
+			if suffix.isdigit():
+				try:
+					os.remove(filepath)
+				except Exception as e:
+					print("Error removing batch file:", e)
+
 last_collected_files = []
 
-def process_last_collected_files(current_image, project_is_real):
+def process_last_collected_files(current_image, project_is_real, half_size=False):
 	global last_collected_files
 	for collected in last_collected_files:
 		should_delete_file_afterwards = False
@@ -250,7 +271,6 @@ def process_last_collected_files(current_image, project_is_real):
 				selectedlayers = current_image.get_selected_layers()
 				if reference_layer is None:
 					current_image.insert_layer(layer, None, 0)
-					layer.set_offsets(pos_x, pos_y)
 				else:
 					# can be NEW_BEFORE, NEW_AFTER and REPLACE
 					reference_layer_action = action.get("reference_layer_action", "NEW_AFTER")
@@ -266,7 +286,11 @@ def process_last_collected_files(current_image, project_is_real):
 						# hide it and set it before the new layer
 						reference_layer.set_visible(False)
 						current_image.insert_layer(layer, parent_layer, reference_layer_index + 1)
-					layer.set_offsets(pos_x, pos_y)
+				if half_size:
+					layer.scale(layer.get_width() * 2, layer.get_height() * 2, False)
+					pos_x = pos_x * 2
+					pos_y = pos_y * 2
+				layer.set_offsets(pos_x, pos_y)
 				# go back to the previously selected layers
 				# so the user doesnt suddenly lose their selection
 				current_image.set_selected_layers(selectedlayers)
@@ -496,8 +520,8 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 					elif message_parsed["type"] == "PREPARE_BATCH":
 						if message_parsed.get("file_action", "APPEND") == "REPLACE" and not self.protected_run_mode:
 							# we need to remove all the potentially existing files in the batch
-							# TODO: implement removing existing files in the batch
 							filename = message_parsed.get("file_name", "new batch")
+							remove_batch_files(filename, self.project_current_timeline_folder, self.project_is_real)
 					elif message_parsed["type"] == "WORKFLOW_FINISHED":
 						self.current_run_id = None
 						if self.is_running:
@@ -678,6 +702,21 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 
 			self.workflow_selector.set_tooltip_text(_("Select the workflow that you want to use, each workflow has their own set of options and parameters"))
 
+			self.half_size_checkbox = Gtk.CheckButton(label=_("Use Half Size"))
+			self.half_size_checkbox.set_tooltip_text(_("If enabled, the workflow will be run at half the size of the original image, this can help speed up processing at the cost of quality"))
+			self.main_box.pack_start(self.half_size_checkbox, False, False, 0)
+
+			# set enabled or disabled based on the last default config
+			half_size_default = get_aihub_common_property_value("", "", "default_half_size", False)
+			self.half_size_checkbox.set_active(half_size_default)
+
+			if half_size_default:
+				self.set_half_size(True)
+			else:
+				self.set_half_size(False)
+
+			self.half_size_checkbox.connect("toggled", self.on_half_size_toggled)
+
 			# we are also going to make some label text display to display
 			# the description
 			self.description_label = Gtk.TextView()
@@ -729,6 +768,15 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 			self.setup_project_ui()
 
 			self.on_context_selected(self.context_selector)
+
+		def on_half_size_toggled(self, checkbox):
+			is_active = checkbox.get_active()
+			self.set_half_size(is_active)
+
+			update_aihub_common_property_value("", "", "default_half_size", is_active, self.project_saved_config_json_file)
+
+		def set_half_size(self, half_size: bool):
+			self.half_size = half_size
 
 		def setup_project_ui(self):
 			if self.errored:
@@ -1125,7 +1173,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 
 				for element in self.workflow_elements_all:
 					if element.get_widget():
-						element.after_ui_built()
+						element.after_ui_built(self.workflow_elements_all)
 
 				self.on_dialog_focus(None, None)
 			except Exception as e:
@@ -1243,7 +1291,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 				for element in self.workflow_elements_all:
 					websocket_relegator = WsRelegator()
 					self.websocket_relegator = websocket_relegator
-					status = element.upload_binary(self.websocket, self.websocket_relegator)
+					status = element.upload_binary(self.websocket, self.websocket_relegator, half_size=self.half_size)
 					self.websocket_relegator = None
 					if (status is False or type(status) is str):
 						self.mark_as_running(False)
@@ -1252,7 +1300,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 						else:
 							self.setStatus(_("Error: Failed to upload binary data"))
 						return
-					values[element.id] = element.get_value()
+					values[element.id] = element.get_value(half_size=self.half_size)
 
 				workflow_operation = {
 					"type": "WORKFLOW_OPERATION",
@@ -1324,7 +1372,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 					self.on_dialog_focus(None, None)
 
 				if not running:
-					process_last_collected_files(self.selected_image, self.project_is_real)
+					process_last_collected_files(self.selected_image, self.project_is_real, self.half_size)
 
 				if hasattr(self, "project_dialog") and self.project_dialog is not None and self.project_is_real and not running:
 					self.project_dialog.refresh(self.project_file_contents, self.project_current_timeline_folder)
@@ -1475,27 +1523,31 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 			menu.append(Gtk.SeparatorMenuItem())
 
 			# add a menu entry for adding layers
-			self.menu_item_settings = Gtk.MenuItem(label=_("New 0.5k Layer"))
-			self.menu_item_settings.connect("activate", self.on_new_05k_layer)
-			menu.append(self.menu_item_settings)
+			self.menu_item_05klayer = Gtk.MenuItem(label=_("New 0.5k Layer"))
+			self.menu_item_05klayer.connect("activate", self.on_new_05k_layer)
+			menu.append(self.menu_item_05klayer)
 
-			self.menu_item_settings = Gtk.MenuItem(label=_("New 0.75k Layer"))
-			self.menu_item_settings.connect("activate", self.on_new_075k_layer)
-			menu.append(self.menu_item_settings)
+			self.menu_item_075klayer = Gtk.MenuItem(label=_("New 0.75k Layer"))
+			self.menu_item_075klayer.connect("activate", self.on_new_075k_layer)
+			menu.append(self.menu_item_075klayer)
 
-			self.menu_item_settings = Gtk.MenuItem(label=_("New 1k Layer"))
-			self.menu_item_settings.connect("activate", self.on_new_1k_layer)
-			menu.append(self.menu_item_settings)
+			self.menu_item_1klayer = Gtk.MenuItem(label=_("New 1k Layer"))
+			self.menu_item_1klayer.connect("activate", self.on_new_1k_layer)
+			menu.append(self.menu_item_1klayer)
+
+			self.menu_item_2klayer = Gtk.MenuItem(label=_("New 2k Layer"))
+			self.menu_item_2klayer.connect("activate", self.on_new_2k_layer)
+			menu.append(self.menu_item_2klayer)
 
 			menu.append(Gtk.SeparatorMenuItem())
 
-			self.menu_item_settings = Gtk.MenuItem(label=_("New empty layer at layer size"))
-			self.menu_item_settings.connect("activate", self.on_new_empty_layer)
-			menu.append(self.menu_item_settings)
+			self.menu_item_empty_layer = Gtk.MenuItem(label=_("New empty layer at layer size"))
+			self.menu_item_empty_layer.connect("activate", self.on_new_empty_layer)
+			menu.append(self.menu_item_empty_layer)
 
-			self.menu_item_settings = Gtk.MenuItem(label=_("New layer from visible at layer size"))
-			self.menu_item_settings.connect("activate", self.on_generate_visible_layer)
-			menu.append(self.menu_item_settings)
+			self.menu_item_visible_layer = Gtk.MenuItem(label=_("New layer from visible at layer size"))
+			self.menu_item_visible_layer.connect("activate", self.on_generate_visible_layer)
+			menu.append(self.menu_item_visible_layer)
 
 			# add a divider to the menu
 			menu.append(Gtk.SeparatorMenuItem())
@@ -1629,6 +1681,9 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 
 		def on_new_1k_layer(self, menu_item):
 			self.add_new_layer(1024, 1024)
+
+		def on_new_2k_layer(self, menu_item):
+			self.add_new_layer(2048, 2048)
 
 		def on_new_empty_layer(self, menu_item):
 			if self.selected_image is None:
@@ -2077,6 +2132,11 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 			self.refresh_image_list(True)
 			for element in self.workflow_elements_all:
 				element.on_refresh()
+
+			# refresh the gimp displays, they sometimes get messed up
+			# nope causes gimp to become slow
+			# Gimp.displays_flush()
+			# GLib.idle_add(Gimp.displays_flush)
 
 		def on_project_opened(self):
 			update_aihub_common_property_value("", "", "last_opened_project", self.project_file, None)

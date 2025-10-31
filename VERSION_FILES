@@ -9,3 +9,4 @@ tools.py
 update.py
 VERSION
 workspace.py
+conditions.py

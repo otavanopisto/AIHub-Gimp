@@ -1,6 +1,7 @@
 import shutil
 import ssl
 from about import AboutDialog
+from conditions import ConditionEvaluator
 from settings import SettingsDialog
 from update import UpdateDialog
 from websocket._app import WebSocketApp
@@ -14,6 +15,8 @@ from gtkexposes import EXPOSES
 import uuid
 from project import ProjectDialog
 import ssl
+import sys
+import subprocess
 
 import json
 import os
@@ -42,6 +45,14 @@ try:
 		VERSION = f.read().strip()
 except Exception as e:
 	VERSION = "unknown"
+
+def open_file_with_default_app(path):
+    if sys.platform.startswith("linux"):  # could be "linux", "linux2", "linux3", ...
+        subprocess.run(["xdg-open", path])
+    elif sys.platform == "darwin":
+        subprocess.run(["open", path])
+    elif os.name == "nt":
+        os.startfile(path)
 
 def get_active_image_id(combobox):
 	model = combobox.get_model()
@@ -223,8 +234,9 @@ def remove_batch_files(filename, timeline_path, project_is_real):
 
 last_collected_files = []
 
-def process_last_collected_files(current_image, project_is_real, half_size=False):
+def process_last_collected_files(current_image, project_is_real, half_size=False, half_size_coords=False):
 	global last_collected_files
+	open_with_default_app_afterwards = []
 	for collected in last_collected_files:
 		should_delete_file_afterwards = False
 		action = collected["action"]
@@ -288,8 +300,9 @@ def process_last_collected_files(current_image, project_is_real, half_size=False
 						current_image.insert_layer(layer, parent_layer, reference_layer_index + 1)
 				if half_size:
 					layer.scale(layer.get_width() * 2, layer.get_height() * 2, False)
-					pos_x = pos_x * 2
-					pos_y = pos_y * 2
+					if half_size_coords:
+						pos_x = pos_x * 2
+						pos_y = pos_y * 2
 				layer.set_offsets(pos_x, pos_y)
 				# go back to the previously selected layers
 				# so the user doesnt suddenly lose their selection
@@ -323,12 +336,19 @@ def process_last_collected_files(current_image, project_is_real, half_size=False
 							shutil.copyfile(finalpath, user_filepath)
 						except Exception as e:
 							print("Error moving file to user location:", e)
+	
+					if action["action"] == "NEW_VIDEO" or action["action"] == "NEW_AUDIO":
+						open_with_default_app_afterwards.append(finalpath)
 			
 			if should_delete_file_afterwards and os.path.exists(finalpath):
 				try:
 					os.remove(finalpath)
 				except Exception as e:
 					print("Error removing temporary file:", e)
+
+	for path in open_with_default_app_afterwards:
+		open_file_with_default_app(path)
+	
 	last_collected_files = []
 
 def handle_project_file(
@@ -346,20 +366,17 @@ def handle_project_file(
 
 	if "batch_index" in action and action["batch_index"] is not None:
 		# when real projects we do not open any batch automatically
-		if not project_is_real:
-			# we need to find if we have an existing entry for these files
-			found_existing_entry = False
-			for entry in last_collected_files:
-				if entry["action"]["file_name"] == file_name:
-					entry["paths"].append(finalpath)
-					found_existing_entry = True
-					break
-			if not found_existing_entry:
-				last_collected_files.append({"action": action, "paths": [finalpath]})
+		found_existing_entry = False
+		for entry in last_collected_files:
+			if entry["action"]["file_name"] == file_name:
+				entry["paths"].append(finalpath)
+				found_existing_entry = True
+				break
+		if not found_existing_entry:
+			last_collected_files.append({"action": action, "paths": [finalpath]})
 	else:
-		if not project_is_real:
-			# unknown action, we will just try to ask the user to save the file, once we are done
-			last_collected_files.append({"action": action, "path": finalpath})
+		# unknown action, we will just try to ask the user to save the file, once we are done
+		last_collected_files.append({"action": action, "path": finalpath})
 
 def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 	GimpUi.init("AIHub.py")
@@ -710,11 +727,25 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 			half_size_default = get_aihub_common_property_value("", "", "default_half_size", False)
 			self.half_size_checkbox.set_active(half_size_default)
 
+			self.half_size_coords_checkbox = Gtk.CheckButton(label=_("Use Half Size Layer Coordinates"))
+			self.half_size_coords_checkbox.set_tooltip_text(_("If enabled, the positions of layers added to the image will be also adjusted for half size processing, this is useful when using half size processing to ensure layers are placed correctly"))
+			self.main_box.pack_start(self.half_size_coords_checkbox, False, False, 0)
+
+			# set enabled or disabled based on the last default config
+			half_size_coords_default = get_aihub_common_property_value("", "", "default_half_size_coords", False)
+			self.half_size_coords_checkbox.set_active(half_size_coords_default)
+
 			if half_size_default:
 				self.set_half_size(True)
 			else:
 				self.set_half_size(False)
 
+			if half_size_coords_default:
+				self.set_half_size_coords(True)
+			else:
+				self.set_half_size_coords(False)
+
+			self.half_size_coords_checkbox.connect("toggled", self.on_half_size_coords_toggled)
 			self.half_size_checkbox.connect("toggled", self.on_half_size_toggled)
 
 			# we are also going to make some label text display to display
@@ -777,6 +808,22 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 
 		def set_half_size(self, half_size: bool):
 			self.half_size = half_size
+
+			if half_size:
+				# if half size is enabled, we also enable half size coords
+				self.half_size_coords_checkbox.set_sensitive(True)
+			else:
+				# if half size is disabled, we also disable half size coords
+				self.half_size_coords_checkbox.set_sensitive(False)
+
+		def on_half_size_coords_toggled(self, checkbox):
+			is_active = checkbox.get_active()
+			self.set_half_size_coords(is_active)
+
+			update_aihub_common_property_value("", "", "default_half_size_coords", is_active, self.project_saved_config_json_file)
+		
+		def set_half_size_coords(self, half_size_coords: bool):
+			self.half_size_coords = half_size_coords
 
 		def setup_project_ui(self):
 			if self.errored:
@@ -1098,6 +1145,9 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 				self.workflow_elements_all.sort(key=lambda x: (x.get_index(), -x.get_special_priority()))
 
 				for instance in self.workflow_elements_all:
+					instance.set_exposes_in_workflow(self.workflow_elements_all)
+
+				for instance in self.workflow_elements_all:
 					class_name = instance.__class__.__name__
 					if class_name == "AIHubExposeModel" or class_name == "AIHubExposeModelSimple":
 						# if the instance did not load its initial value from the config file
@@ -1192,10 +1242,68 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 			if self.errored:
 				return
 			
-			self.mark_as_running(True)
-
+			# check if all the elements are can_run returns true
+			for element in self.workflow_elements_all:
+				if not element.can_run():
+					# show a dialog specifiying that it is invalid
+					dialog = Gtk.MessageDialog(
+						transient_for=self,
+						flags=0,
+						message_type=Gtk.MessageType.ERROR,
+						buttons=Gtk.ButtonsType.OK,
+						text=_("Some input fields are invalid"),
+					)
+					dialog.format_secondary_text(_("Please check the value for \"{}\" and try again").format(element.get_ui_label_identifier()))
+					dialog.show()
+					dialog.set_modal(True)
+					# make the dialog on top of everything
+					dialog.set_keep_above(True)
+					# make it close once you click ok, and also call mark_as_running(False)
+					dialog.connect("response", lambda d, r: d.destroy())
+					return
+				
 			selected_workflow = self.workflow_selector.get_active_id()
 			workflow = self.workflows.get(selected_workflow)
+
+			if not workflow:
+				dialog = Gtk.MessageDialog(
+					transient_for=self,
+					flags=0,
+					message_type=Gtk.MessageType.ERROR,
+					buttons=Gtk.ButtonsType.OK,
+					text=_("No workflow selected"),
+				)
+				dialog.format_secondary_text(_("Please check the value for \"{}\" and try again").format(element.get_ui_label_identifier()))
+				dialog.show()
+				dialog.set_modal(True)
+				# make the dialog on top of everything
+				dialog.set_keep_above(True)
+				# make it close once you click ok, and also call mark_as_running(False)
+				dialog.connect("response", lambda d, r: d.destroy())
+				return
+			
+			conditions = workflow.get("conditions", [])
+			for condition in conditions:
+				evaluator = ConditionEvaluator(condition)
+				valid = evaluator.evaluate(self.workflow_elements_all, self.half_size, self.half_size_coords)
+				if not valid:
+					dialog = Gtk.MessageDialog(
+						transient_for=self,
+						flags=0,
+						message_type=Gtk.MessageType.ERROR,
+						buttons=Gtk.ButtonsType.OK,
+						text=_("Workflow condition not met"),
+					)
+					dialog.format_secondary_text(evaluator.get_error_message())
+					dialog.show()
+					dialog.set_modal(True)
+					# make the dialog on top of everything
+					dialog.set_keep_above(True)
+					# make it close once you click ok, and also call mark_as_running(False)
+					dialog.connect("response", lambda d, r: d.destroy())
+					return
+			
+			self.mark_as_running(True)
 
 			workflow_is_init = workflow.get("project_type_init", False)
 
@@ -1267,25 +1375,6 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 				self.protected_run_mode = True
 
 			try:
-				# check if all the elements are can_run returns true
-				for element in self.workflow_elements_all:
-					if not element.can_run():
-						# show a dialog specifiying that it is invalid
-						dialog = Gtk.MessageDialog(
-							transient_for=self,
-							flags=0,
-							message_type=Gtk.MessageType.ERROR,
-							buttons=Gtk.ButtonsType.OK,
-							text=_("Some input fields are invalid"),
-						)
-						dialog.format_secondary_text(_("Please check the value for \"{}\" and try again").format(element.get_ui_label_identifier()))
-						dialog.show()
-						# make the dialog on top of everything
-						dialog.set_keep_above(True)
-						# make it close once you click ok, and also call mark_as_running(False)
-						dialog.connect("response", lambda d, r: self.mark_as_running(False) or d.destroy())
-						return
-
 				# we are going to gather all the values
 				values = {}
 				for element in self.workflow_elements_all:
@@ -1300,7 +1389,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 						else:
 							self.setStatus(_("Error: Failed to upload binary data"))
 						return
-					values[element.id] = element.get_value(half_size=self.half_size)
+					values[element.id] = element.get_value(half_size=self.half_size, half_size_coords=self.half_size_coords)
 
 				workflow_operation = {
 					"type": "WORKFLOW_OPERATION",
@@ -1372,7 +1461,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 					self.on_dialog_focus(None, None)
 
 				if not running:
-					process_last_collected_files(self.selected_image, self.project_is_real, self.half_size)
+					process_last_collected_files(self.selected_image, self.project_is_real, self.half_size, self.half_size_coords)
 
 				if hasattr(self, "project_dialog") and self.project_dialog is not None and self.project_is_real and not running:
 					self.project_dialog.refresh(self.project_file_contents, self.project_current_timeline_folder)
@@ -1548,6 +1637,21 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 			self.menu_item_visible_layer = Gtk.MenuItem(label=_("New layer from visible at layer size"))
 			self.menu_item_visible_layer.connect("activate", self.on_generate_visible_layer)
 			menu.append(self.menu_item_visible_layer)
+
+			# add a divider to the menu
+			menu.append(Gtk.SeparatorMenuItem())
+
+			self.menu_item_crop_layer_128 = Gtk.MenuItem(label=_("Crop layer to content with margins 128x"))
+			self.menu_item_crop_layer_128.connect("activate", self.crop_to_content_with_margins_128)
+			menu.append(self.menu_item_crop_layer_128)
+
+			self.menu_item_crop_layer_256 = Gtk.MenuItem(label=_("Crop layer to content with margins 256x"))
+			self.menu_item_crop_layer_256.connect("activate", self.crop_to_content_with_margins_256)
+			menu.append(self.menu_item_crop_layer_256)
+
+			self.menu_item_crop_layer_512 = Gtk.MenuItem(label=_("Crop layer to content with margins 512x"))
+			self.menu_item_crop_layer_512.connect("activate", self.crop_to_content_with_margins_512)
+			menu.append(self.menu_item_crop_layer_512)
 
 			# add a divider to the menu
 			menu.append(Gtk.SeparatorMenuItem())
@@ -1792,6 +1896,51 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 			new_layer.resize(new_width, new_height, offset_x, offset_y)
 
 			Gimp.displays_flush()
+
+		def crop_to_content_with_margins_128(self, menu_item):
+			self.crop_to_content_with_margins(increments=128)
+
+		def crop_to_content_with_margins_256(self, menu_item):
+			self.crop_to_content_with_margins(increments=256)
+		
+		def crop_to_content_with_margins_512(self, menu_item):
+			self.crop_to_content_with_margins(increments=512)
+
+		def crop_to_content_with_margins(self, increments: int = 256):
+			layers = self.selected_image.get_selected_layers()
+			if layers is None or len(layers) == 0:
+				self.showErrorDialog(_("Error"), _("No layers in the selected image"))
+				return
+			reference_layer = layers[0]
+			try:
+				# first we are going to run a procedure
+				procedure = Gimp.get_pdb().lookup_procedure("gimp-image-autocrop-selected-layers")
+				config = procedure.create_config()
+				config.set_property('drawable', reference_layer)
+				config.set_property('image', self.selected_image)
+				procedure.run(config)
+
+				# now we need to see what our new layer width and height is
+				new_width = reference_layer.get_width()
+				new_height = reference_layer.get_height()
+
+				# and we are going to add those margins in both directions
+				new_width += increments * 2
+				new_height += increments * 2
+
+				# now let's make sure that our new width and height divided by increments is an integer
+				if new_width % increments != 0:
+					new_width += increments - (new_width % increments)
+				if new_height % increments != 0:
+					new_height += increments - (new_height % increments)
+
+				reference_layer.resize(new_width, new_height, (new_width-reference_layer.get_width())/2, (new_height-reference_layer.get_height())/2)
+
+				Gimp.displays_flush()
+
+			except Exception as e:
+				self.showErrorDialog(_("Error"), _("Could not crop layer: {}").format(str(e)))
+				return
 
 		def on_menu_settings(self, menu_item):
 			if not hasattr(self, "settings_dialog") or self.settings_dialog is None:

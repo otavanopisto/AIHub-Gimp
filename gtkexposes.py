@@ -29,8 +29,10 @@ class AIHubExposeBase:
 		self.current_image = None
 		self.image_model = None
 		self.on_change_callback = None
+		self.change_listeners = []
 		self.on_change_callback_hijack = False
 		self.apinfo = None
+		self.siblings = []
 
 		self.apinfo = apinfo
 		self.data = data
@@ -43,8 +45,16 @@ class AIHubExposeBase:
 		self.project_current_timeline_path = project_current_timeline_path
 		self.project_saved_path = project_saved_path
 
+		self.all_exposes_in_workflow = []
+
 		if (self.initial_value is None):
 			self.set_initial_value()
+
+	def set_exposes_in_workflow(self, all_exposes):
+		self.all_exposes_in_workflow = all_exposes
+
+	def set_siblings(self, siblings):
+		self.siblings = siblings
 
 	def set_initial_value(self):
 		if ("value" in self.data and self.data["value"] is not None):
@@ -72,7 +82,7 @@ class AIHubExposeBase:
 					break
 			return config
 
-	def get_value(self, half_size=False):
+	def get_value(self, half_size=False, half_size_coords=False):
 		return None
 
 	def get_widget(self):
@@ -100,6 +110,9 @@ class AIHubExposeBase:
 
 			if self.on_change_callback_hijack:
 				return
+			
+		for secondary_listener in self.change_listeners:
+			secondary_listener(value)
 
 		# add a timeout to stack and only do the change after 1s if the function isnt called continously
 		# basically it waits 1s before calling the function but
@@ -159,6 +172,13 @@ class AIHubExposeBase:
 	def hook_on_change_fn(self, fn):
 		self.on_change_callback = fn
 
+	def add_change_event_listener(self, fn):
+		self.change_listeners.append(fn)
+
+	def remove_change_event_listener(self, fn):
+		if fn in self.change_listeners:
+			self.change_listeners.remove(fn)
+
 	def hook_on_change_fn_hijack(self, fn):
 		self.on_change_callback = fn
 		self.on_change_callback_hijack = True
@@ -168,6 +188,9 @@ class AIHubExposeBase:
 	
 	def get_special_priority(self):
 		return 0
+	
+	def destroy(self):
+		pass
 	
 def save_image_file(gimp_image, file_path, half_size=False):
 	if half_size:
@@ -182,6 +205,8 @@ def save_image_file(gimp_image, file_path, half_size=False):
 		new_height = gimp_image.get_height() // 2
 
 		new_image.scale(new_width, new_height)
+	else:
+		new_image = gimp_image
 
 	gimp_image = new_image
 
@@ -206,6 +231,7 @@ class AIHubExposeImage(AIHubExposeBase):
 		self.success_label: AIHubLabel = None
 		self.namelabel: Gtk.Label = None
 		self.select_button: Gtk.Button = None
+		self.select_from_layer_button = None
 		self.select_combo: Gtk.ComboBox = None
 		self.image_preview: Gtk.Image = None
 		self.selected_filename: str = None
@@ -234,6 +260,9 @@ class AIHubExposeImage(AIHubExposeBase):
 			self.select_button = Gtk.Button(label=_("Select a video frame from a file") if is_frame else _("Select an image from a file"), xalign=0)
 			self.select_button.connect("clicked", self.on_file_chooser_clicked)
 
+			self.select_from_layer_button = Gtk.Button(label=_("Use current layer intersection"), xalign=0)
+			self.select_from_layer_button.connect("clicked", self.on_select_from_layer_button_clicked)
+
 			self.select_combo = Gtk.ComboBox()
 
 			renderer_pixbuf = Gtk.CellRendererPixbuf()
@@ -247,6 +276,7 @@ class AIHubExposeImage(AIHubExposeBase):
 			if known_tooltip is not None:
 				self.select_combo.set_tooltip_text(known_tooltip)
 				self.select_button.set_tooltip_text(known_tooltip)
+				self.select_from_layer_button.set_tooltip_text(known_tooltip)
 
 			if self.image_model is not None:
 				self.select_combo.set_model(self.image_model)
@@ -271,6 +301,7 @@ class AIHubExposeImage(AIHubExposeBase):
 			self.box.pack_start(self.error_label.get_widget(), False, False, 0)
 			self.box.pack_start(self.success_label.get_widget(), False, False, 0)
 			self.box.pack_start(self.select_button, True, True, 0)
+			self.box.pack_start(self.select_from_layer_button, True, True, 0)
 			self.box.pack_start(self.select_combo, True, True, 0)
 
 			self.image_preview = Gtk.Image()
@@ -346,14 +377,17 @@ class AIHubExposeImage(AIHubExposeBase):
 
 				if half_size:
 					# we need to load the image and resize it to half size and save it to a temporary file
-					pixbuf = Pixbuf.new_from_file(self.selected_filename)
-					new_width = pixbuf.get_width() // 2
-					new_height = pixbuf.get_height() // 2
-					scaled_pixbuf = pixbuf.scale_simple(new_width, new_height, InterpType.BILINEAR)
+					# use gimp to resize
+					loaded_image = Gimp.file_load(Gimp.RunMode.NONINTERACTIVE, Gio.File.new_for_path(self.selected_filename))
+					new_width = loaded_image.get_width() // 2
+					new_height = loaded_image.get_height() // 2
+					loaded_image.scale(new_width, new_height)
 
-					# save to a temporary file
-					file_to_upload = os.path.join(GLib.get_tmp_dir(), f"aihub_temp_image_halfsize_{random.randint(0, 1000000)}.png")
-					scaled_pixbuf.savev(file_to_upload, "png", [], [])
+					file_to_upload = os.path.join(GLib.get_tmp_dir(), f"aihub_temp_image_halfsize_{random.randint(0, 1000000)}.webp")
+
+					Gimp.file_save(Gimp.RunMode.NONINTERACTIVE, loaded_image, Gio.File.new_for_path(file_to_upload), None)
+					loaded_image.delete()
+						
 			elif (self.select_combo.get_active() != -1 and self.select_combo.get_model() is not None):
 				tree_iter = self.select_combo.get_active_iter()
 				if tree_iter is not None:
@@ -704,6 +738,57 @@ class AIHubExposeImage(AIHubExposeBase):
 
 		self.load_image_preview()
 
+	def on_select_from_layer_button_clicked(self, widget):
+		# first thing we are simply going to do is to is the same process as merged_image_current_layer_intersection
+		# to export this image to a file
+		if self.current_image is not None:
+			selected_layers = self.current_image.get_selected_layers()
+			if selected_layers is not None and len(selected_layers) > 0:
+				selected_layer = selected_layers[0]
+				id_of_image = self.current_image.get_id()
+				id_of_layer = selected_layer.get_id()
+				file_to_upload = os.path.join(GLib.get_tmp_dir(), f"aihub_temp_file_{id_of_image}_layer_extract_{id_of_layer}.webp")
+				gfile = Gio.File.new_for_path(file_to_upload)
+				
+				new_image = Gimp.Image.new(self.current_image.get_width(), self.current_image.get_height(), self.current_image.get_base_type())
+				new_layer = Gimp.Layer.new_from_visible(self.current_image, new_image)
+				new_image.insert_layer(new_layer, None, 0)
+
+				new_layer.set_offsets(0,0)
+				new_layer.set_opacity(100.0)
+				new_layer.set_visible(True)
+
+				# now we need to calculate the intersection of the current layer with the image
+				layer_offsets = selected_layer.get_offsets()
+				x1 = max(0, layer_offsets.offset_x)
+				y1 = max(0, layer_offsets.offset_y)
+				x2 = min(self.current_image.get_width(), layer_offsets.offset_x + selected_layer.get_width())
+				y2 = min(self.current_image.get_height(), layer_offsets.offset_y + selected_layer.get_height())
+
+				# now we need to crop the new layer to the intersection
+				new_width = x2 - x1
+				new_height = y2 - y1
+				# for some reason the resize function takes negative offsets
+				offset_x = -x1
+				offset_y = -y1
+
+				new_image.resize(new_width, new_height, offset_x, offset_y)
+
+				try:
+					Gimp.file_save(Gimp.RunMode.NONINTERACTIVE, new_image, gfile, None)
+				except Exception as e:
+					raise e
+				finally:
+					new_image.remove_layer(new_layer)
+					new_layer.delete()
+					new_image.delete()
+
+					self.selected_filename = file_to_upload
+					self.select_button.set_label(os.path.basename(self.selected_filename) + " (" + _("Click to clear") + ")")
+					self.on_file_selected()
+					self.select_combo.hide()
+					self.select_from_layer_button.hide()
+
 	def on_file_chooser_clicked(self, widget):
 		self.uploaded_file_path = None
 		if (self.selected_filename is not None):
@@ -714,6 +799,7 @@ class AIHubExposeImage(AIHubExposeBase):
 			else:
 				self.select_button.set_label(_("Select an image from a file"))
 			self.select_combo.show()
+			self.select_from_layer_button.show()
 			self.on_file_selected()
 			return
 		
@@ -729,6 +815,7 @@ class AIHubExposeImage(AIHubExposeBase):
 		file_filter.add_pattern("*.png")
 		file_filter.add_pattern("*.jpg")
 		file_filter.add_pattern("*.jpeg")
+		file_filter.add_pattern("*.webp")
 		dialog.add_filter(file_filter)
 		# Do not add any other filters
 
@@ -738,9 +825,9 @@ class AIHubExposeImage(AIHubExposeBase):
 			self.select_button.set_label(os.path.basename(filename) + " (" + _("Click to clear") + ")")
 			self.selected_filename = filename
 			self.on_file_selected()
+			self.select_combo.hide()
+			self.select_from_layer_button.hide()
 		dialog.destroy()
-
-		self.select_combo.hide()
 
 	def get_widget(self):
 		return self.box
@@ -758,9 +845,9 @@ class AIHubExposeImage(AIHubExposeBase):
 	
 	def on_file_selected(self):
 		self.on_change(self.get_value_base())
-		self.load_image_preview()
 		self.error_label.hide()
 		self.success_label.hide()
+		self.load_image_preview()
 
 	def load_image_preview(self):
 		if self.is_using_internal_file():
@@ -877,16 +964,29 @@ class AIHubExposeImage(AIHubExposeBase):
 					pixbuf = pixbuf.scale_simple(width, height, InterpType.BILINEAR)
 					self.image_preview.set_from_pixbuf(pixbuf)
 				except Exception as e:
-					self.image_preview.clear()
-					self.value_height = 0
-					self.value_width = 0
-					self.value_layer_id = ""
-					self.value_pos_x = 0
-					self.value_pos_y = 0
+					# try to load the image using GIMP
+					try:
+						gfile = Gio.File.new_for_path(self.selected_filename)
+						loaded_image = Gimp.file_load(Gimp.RunMode.NONINTERACTIVE, gfile)
+						pixbuf = loaded_image.get_thumbnail(400, int(loaded_image.get_height() * (400 / loaded_image.get_width())), Gimp.PixbufTransparency.KEEP_ALPHA)
+						self.value_height = loaded_image.get_height()
+						self.value_width = loaded_image.get_width()
+						self.value_layer_id = ""
+						self.value_pos_x = 0
+						self.value_pos_y = 0
+						self.image_preview.set_from_pixbuf(pixbuf)
+						loaded_image.delete()
+					except Exception as e:
+						self.image_preview.clear()
+						self.value_height = 0
+						self.value_width = 0
+						self.value_layer_id = ""
+						self.value_pos_x = 0
+						self.value_pos_y = 0
 
-					self.error_label.show()
-					self.success_label.hide()
-					self.error_label.set_text(_("Failed to load image"))
+						self.error_label.show()
+						self.success_label.hide()
+						self.error_label.set_text(_("Failed to load image"))
 			elif (self.select_combo.get_active() != -1 and self.select_combo.get_model() is not None):
 				tree_iter = self.select_combo.get_active_iter()
 				if tree_iter is not None:
@@ -934,7 +1034,7 @@ class AIHubExposeImage(AIHubExposeBase):
 			dictValue["total_frames"] = self.total_frames_widget.get_value()
 		return dictValue
 	
-	def get_value(self, half_size=False):
+	def get_value(self, half_size=False, half_size_coords=False):
 		base_value = self.get_value_base()
 		# remove _local_file from the value
 		if base_value is not None and "_local_file" in base_value:
@@ -943,9 +1043,9 @@ class AIHubExposeImage(AIHubExposeBase):
 			del base_value["local_file"]
 
 		if half_size:
-			if "pos_x" in base_value:
+			if "pos_x" in base_value and half_size_coords:
 				base_value["pos_x"] = base_value["pos_x"] // 2
-			if "pos_y" in base_value:
+			if "pos_y" in base_value and half_size_coords:
 				base_value["pos_y"] = base_value["pos_y"] // 2
 			if "value_width" in base_value:
 				base_value["value_width"] = base_value["value_width"] // 2
@@ -976,8 +1076,10 @@ class AIHubExposeImage(AIHubExposeBase):
 		else:
 			if self.selected_filename is not None:
 				self.select_combo.hide()
+				self.select_from_layer_button.hide()
 			else:
 				self.select_combo.show()
+				self.select_from_layer_button.show()
 			self.select_button.show()
 
 	def on_refresh(self):
@@ -1074,8 +1176,8 @@ class AIHubExposeFileBase(AIHubExposeBase):
 		self.box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
 		self.box.pack_start(self.label, False, False, 0)
 		self.box.pack_start(self.select_button, False, False, 0)
-		self.error_label = AIHubLabel("", "error")
-		self.success_label = AIHubLabel("", "success")
+		self.error_label = AIHubLabel("", b"color: red;")
+		self.success_label = AIHubLabel("", b"color: green;")
 		self.box.pack_start(self.success_label.get_widget(), False, False, 0)
 		self.box.pack_start(self.error_label.get_widget(), False, False, 0)
 		self.error_label.hide()
@@ -1118,7 +1220,7 @@ class AIHubExposeFileBase(AIHubExposeBase):
 			"local_file": self.uploaded_file_path,
 		}
 	
-	def get_value(self, half_size=False):
+	def get_value(self, half_size=False, half_size_coords=False):
 		base_value = self.get_value_base()
 		# remove _local_file from the value
 		if base_value is not None and "_local_file" in base_value:
@@ -1231,13 +1333,13 @@ class AIHubExposeInteger(AIHubExposeBase):
 
 		# make a numeric entry that only allows for integer values
 		expected_step = data["step"] if "step" in data else 1
-		adjustment = Gtk.Adjustment(
+		self.adjustment = Gtk.Adjustment(
 			value=int(self.initial_value) if self.initial_value is not None else (data["min"] if "min" in data else 0),
-			lower=data["min"] if "min" in data else -0x8000000000000000,
-			upper=data["max"] if "max" in data else 0xffffffffffffffff,
+			lower=data["min"] if "min" in data and (not "min_expose_id" in data or not data["min_expose_id"]) else -0x8000000000000000,
+			upper=data["max"] if "max" in data and (not "max_expose_id" in data or not data["max_expose_id"]) else 0xffffffffffffffff,
 			step_increment=expected_step,
 		)
-		self.widget = Gtk.SpinButton(adjustment=adjustment, climb_rate=1, digits=0, numeric=True)
+		self.widget = Gtk.SpinButton(adjustment=self.adjustment, climb_rate=1, digits=0, numeric=True)
 		self.widget.set_input_purpose(Gtk.InputPurpose.NUMBER)
 
 		# add on change event
@@ -1262,13 +1364,16 @@ class AIHubExposeInteger(AIHubExposeBase):
 		# ensure to add spacing from the top some margin top
 		self.box.set_margin_top(10)
 
-	def get_value(self, half_size=False):
+	def get_value(self, half_size=False, half_size_coords=False):
 		return self.widget.get_value_as_int()
 
 	def get_widget(self):
 		return self.box
 
 	def on_change_value(self, widget):
+		for sibling in self.siblings:
+			sibling.check_validity(sibling.get_value())
+
 		self.on_change(widget.get_value_as_int())
 
 	def check_validity(self, value):
@@ -1282,45 +1387,92 @@ class AIHubExposeInteger(AIHubExposeBase):
 			smallest_possible_integer = -0x8000000000000000
 			largest_possible_integer = 0x7FFFFFFFFFFFFFFF
 			self.error_label.set_text(_("Value must be between {} and {}").format(min or smallest_possible_integer, max or largest_possible_integer))
+		elif not self.check_for_unique_valid(value):
+			self.error_label.show()
+			self.error_label.set_text(_("Value must be unique among siblings"))
+		elif not self.check_for_sorted_valid(value):
+			self.error_label.show()
+			self.error_label.set_text(_("Value must be greater than the previous sibling"))
 		else:
 			self.error_label.hide()
 
 	def after_ui_built(self, workflow_elements_all):
 		self.check_validity(self.get_value())
 
+		if "max_expose_id" in self.data:
+			max_expose_id_id = self.data["max_expose_id"]
+			for expose in workflow_elements_all:
+				if expose.get_id() == max_expose_id_id and isinstance(expose, (AIHubExposeInteger, AIHubExposeFloat, AIHubExposeProjectConfigInteger, AIHubExposeProjectConfigFloat)):
+					expose.add_change_event_listener(self.on_max_widget_change)
+					self.on_max_widget_change(expose.get_value())
+					self.max_widget = expose
+
+		if "min_expose_id" in self.data:
+			min_expose_id_id = self.data["min_expose_id"]
+			for expose in workflow_elements_all:
+				if expose.get_id() == min_expose_id_id and isinstance(expose, (AIHubExposeInteger, AIHubExposeFloat, AIHubExposeProjectConfigInteger, AIHubExposeProjectConfigFloat)):
+					expose.add_change_event_listener(self.on_min_widget_change)
+					self.on_min_widget_change(expose.get_value())
+					self.min_widget = expose
+
+	def check_for_unique_valid(self, value):
+		if not self.data.get("unique", False):
+			return True
+		
+		for sibling in self.siblings:
+			if sibling.get_value() == value and sibling != self:
+				return False
+			
+		return True
+	
+	def check_for_sorted_valid(self, value):
+		if not self.data.get("sorted", False):
+			return True
+		
+		previous_sibling = None
+		for sibling in self.siblings:
+			if sibling == self:
+				break
+			previous_sibling = sibling
+		
+		if previous_sibling is not None:
+			previous_value = previous_sibling.get_value()
+			if value <= previous_value:
+				return False
+		
+		return True
+
 	def can_run(self):
 		min = self.data["min"] if "min" in self.data else None
 		max = self.data["max"] if "max" in self.data else None
 		value = self.get_value()
-		return (min is None or value >= min) and (max is None or value <= max)
+		return (min is None or value >= min) and (max is None or value <= max) and self.check_for_unique_valid(value) and self.check_for_sorted_valid(value)
 	
-	def add_max_widget_constraint(self, max_widget):
-		# when the max_widget value changes, we need to update our max value
-		def on_max_widget_change(widget):
-			new_max = widget.get_value_as_int()
-			adjustment: Gtk.Adjustment = self.widget.get_adjustment()
-			adjustment.set_upper(new_max)
-			self.data["max"] = new_max
-			# if current value is greater than new max, set it to new max
-			if self.widget.get_value_as_int() > new_max:
-				self.widget.set_value(new_max)
-			self.check_validity(self.get_value())
-		
-		max_widget.widget.connect("value-changed", on_max_widget_change)
+	def on_max_widget_change(self, value):
+		value_with_offset = int(value) + self.data.get("max_expose_offset", 0)
+		adjustment: Gtk.Adjustment = self.widget.get_adjustment()
+		adjustment.set_upper(value_with_offset)
+		self.data["max"] = value_with_offset
+		# if current value is greater than new max, set it to new max
+		if self.widget.get_value_as_int() > value_with_offset:
+			self.widget.set_value(value_with_offset)
+		self.check_validity(self.get_value())
 
-	def add_min_widget_constraint(self, min_widget):
-		# when the min_widget value changes, we need to update our min value
-		def on_min_widget_change(widget):
-			new_min = widget.get_value_as_int()
-			adjustment: Gtk.Adjustment = self.widget.get_adjustment()
-			adjustment.set_lower(new_min)
-			self.data["min"] = new_min
-			# if current value is less than new min, set it to new min
-			if self.widget.get_value_as_int() < new_min:
-				self.widget.set_value(new_min)
-			self.check_validity(self.get_value())
-		
-		min_widget.widget.connect("value-changed", on_min_widget_change)
+	def on_min_widget_change(self, value):
+		value_with_offset = int(value) + self.data.get("min_expose_offset", 0)
+		adjustment: Gtk.Adjustment = self.widget.get_adjustment()
+		adjustment.set_lower(value_with_offset)
+		self.data["min"] = value_with_offset
+		# if current value is less than new min, set it to new min
+		if self.widget.get_value_as_int() < value_with_offset:
+			self.widget.set_value(value_with_offset)
+		self.check_validity(self.get_value())
+
+	def destroy(self):
+		if hasattr(self, 'max_widget'):
+			self.max_widget.remove_change_event_listener(self.on_max_widget_change)
+		if hasattr(self, 'min_widget'):
+			self.min_widget.remove_change_event_listener(self.on_min_widget_change)
 
 class AIHubExposeSeed(AIHubExposeBase):
 	def __init__(self, id, data, workflow_context, workflow_id, workflow, project_current_timeline_path, project_saved_path, apinfo):
@@ -1403,7 +1555,7 @@ class AIHubExposeSeed(AIHubExposeBase):
 			"value": self.widget_value.get_active_id()
 		}
 	
-	def get_value(self, half_size=False):
+	def get_value(self, half_size=False, half_size_coords=False):
 		current_selection = self.widget_value.get_active_id()
 		if current_selection == "random":
 			return random.randint(0, 0xffffffffffffffff)
@@ -1450,8 +1602,8 @@ class AIHubExposeFloat(AIHubExposeBase):
 		expected_step = data["step"] if "step" in data else 0.1
 		adjustment = Gtk.Adjustment(
 			value=float(self.initial_value) if self.initial_value is not None else (data["min"] if "min" in data else 0.0),
-			lower=data["min"] if "min" in data else -1e10,
-			upper=data["max"] if "max" in data else 1e10,
+			lower=data["min"] if "min" in data and (not "min_expose_id" in data or not data["min_expose_id"]) else -1e10,
+			upper=data["max"] if "max" in data and (not "max_expose_id" in data or not data["max_expose_id"]) else 1e10,
 			step_increment=expected_step,
 		)
 		# check how many decimal places are in expected_step
@@ -1487,13 +1639,42 @@ class AIHubExposeFloat(AIHubExposeBase):
 		# ensure to add spacing from the top some margin top
 		self.box.set_margin_top(10)
 
-	def get_value(self, half_size=False):
+	def check_for_unique_valid(self, value):
+		if not self.data.get("unique", False):
+			return True
+		
+		for sibling in self.siblings:
+			if sibling.get_value() == value and sibling != self:
+				return False
+			
+		return True
+	
+	def check_for_sorted_valid(self, value):
+		if not self.data.get("sorted", False):
+			return True
+		
+		previous_sibling = None
+		for sibling in self.siblings:
+			if sibling == self:
+				break
+			previous_sibling = sibling
+		
+		if previous_sibling is not None:
+			previous_value = previous_sibling.get_value()
+			if value <= previous_value:
+				return False
+		
+		return True
+
+	def get_value(self, half_size=False, half_size_coords=False):
 		return self.widget.get_value()
 
 	def get_widget(self):
 		return self.box
 	
 	def on_change_value(self, widget):
+		for sibling in self.siblings:
+			sibling.check_validity(sibling.get_value())
 		self.on_change(widget.get_value())
 
 	def check_validity(self, value):
@@ -1505,48 +1686,68 @@ class AIHubExposeFloat(AIHubExposeBase):
 		elif not (min is None or value >= min) or not (max is None or value <= max):
 			self.error_label.show()
 			self.error_label.set_text(_("Value must be between {} and {}").format(min or '-Infinity', max or 'Infinity'))
+		elif not self.check_for_unique_valid(value):
+			self.error_label.show()
+			self.error_label.set_text(_("Value must be unique among siblings"))
+		elif not self.check_for_sorted_valid(value):
+			self.error_label.show()
+			self.error_label.set_text(_("Value must be greater than the previous sibling"))
 		else:
 			self.error_label.hide()
 
 	def after_ui_built(self, workflow_elements_all):
 		self.check_validity(self.get_value())
 
+		if "max_expose_id" in self.data:
+			max_expose_id_id = self.data["max_expose_id"]
+			for expose in workflow_elements_all:
+				if expose.get_id() == max_expose_id_id and isinstance(expose, (AIHubExposeInteger, AIHubExposeFloat, AIHubExposeProjectConfigInteger, AIHubExposeProjectConfigFloat)):
+					expose.add_change_event_listener(self.on_max_widget_change)
+					self.on_max_widget_change(expose.get_value())
+					self.max_widget = expose
+
+		if "min_expose_id" in self.data:
+			min_expose_id_id = self.data["min_expose_id"]
+			for expose in workflow_elements_all:
+				if expose.get_id() == min_expose_id_id and isinstance(expose, (AIHubExposeInteger, AIHubExposeFloat, AIHubExposeProjectConfigInteger, AIHubExposeProjectConfigFloat)):
+					expose.add_change_event_listener(self.on_min_widget_change)
+					self.on_min_widget_change(expose.get_value())
+					self.min_widget = expose
+
 	def can_run(self):
 		min = self.data["min"] if "min" in self.data else None
 		max = self.data["max"] if "max" in self.data else None
 		value = self.get_value()
-		return (min is None or value >= min) and (max is None or value <= max)
+		return (min is None or value >= min) and (max is None or value <= max) and self.check_for_unique_valid(value) and self.check_for_sorted_valid(value)
 
 	def after_ui_built(self, workflow_elements_all):
 		self.check_validity(self.get_value())
 
-	def add_max_widget_constraint(self, max_widget):
-		# when the max_widget value changes, we need to update our max value
-		def on_max_widget_change(widget):
-			new_max = widget.get_value()
-			adjustment: Gtk.Adjustment = self.widget.get_adjustment()
-			adjustment.set_upper(new_max)
-			self.data["max"] = new_max
-			# if current value is greater than new max, set it to new max
-			if self.widget.get_value() > new_max:
-				self.widget.set_value(new_max)
-			self.check_validity(self.get_value())
-		
-		max_widget.widget.connect("value-changed", on_max_widget_change)
+	def on_max_widget_change(self, value):
+		value_with_offset = float(value) + self.data.get("max_expose_offset", 0.0)
+		adjustment: Gtk.Adjustment = self.widget.get_adjustment()
+		adjustment.set_upper(value_with_offset)
+		self.data["max"] = value_with_offset
+		# if current value is greater than new max, set it to new max
+		if self.widget.get_value() > value_with_offset:
+			self.widget.set_value(value_with_offset)
+		self.check_validity(self.get_value())
 
-	def add_min_widget_constraint(self, min_widget):
-		# when the min_widget value changes, we need to update our min value
-		def on_min_widget_change(widget):
-			new_min = widget.get_value()
-			adjustment: Gtk.Adjustment = self.widget.get_adjustment()
-			adjustment.set_lower(new_min)
-			self.data["min"] = new_min
-			# if current value is less than new min, set it to new min
-			if self.widget.get_value() < new_min:
-				self.widget.set_value(new_min)
-			self.check_validity(self.get_value())
-		
-		min_widget.widget.connect("value-changed", on_min_widget_change)
+	def on_min_widget_change(self, value):
+		value_with_offset = float(value) + self.data.get("min_expose_offset", 0.0)
+		adjustment: Gtk.Adjustment = self.widget.get_adjustment()
+		adjustment.set_lower(value_with_offset)
+		self.data["min"] = value_with_offset
+		# if current value is less than new min, set it to new min
+		if self.widget.get_value() < value_with_offset:
+			self.widget.set_value(value_with_offset)
+		self.check_validity(self.get_value())
+
+	def destroy(self):
+		if hasattr(self, 'max_widget'):
+			self.max_widget.remove_change_event_listener(self.on_max_widget_change)
+		if hasattr(self, 'min_widget'):
+			self.min_widget.remove_change_event_listener(self.on_min_widget_change)
 
 class AIHubExposeCfg(AIHubExposeFloat):
 	def on_model_changed(self, model):
@@ -1577,10 +1778,6 @@ class AIHubExposeBoolean(AIHubExposeBase):
 		self.widget: Gtk.CheckButton = None
 		self.box: Gtk.Box = None
 
-		self.siblings = []
-		self.one_true = False
-		self.one_false = False
-
 		self.widget = Gtk.CheckButton()
 		self.widget.set_active(self.initial_value)
 
@@ -1589,7 +1786,7 @@ class AIHubExposeBoolean(AIHubExposeBase):
 		self.label = Gtk.Label(self.data["label"], xalign=0)
 		self.label.set_size_request(400, -1)
 		self.label.set_line_wrap(True)
-		self.error_label = AIHubLabel("", "color: red;")
+		self.error_label = AIHubLabel("", b"color: red;")
 		self.box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
 		self.box.pack_start(self.label, False, False, 0)
 		self.box.pack_start(self.error_label.get_widget(), False, False, 0)
@@ -1601,7 +1798,7 @@ class AIHubExposeBoolean(AIHubExposeBase):
 		# ensure to add spacing from the top some margin top
 		self.box.set_margin_top(10)
 
-	def get_value(self, half_size=False):
+	def get_value(self, half_size=False, half_size_coords=False):
 		return self.widget.get_active()
 
 	def get_widget(self):
@@ -1611,9 +1808,9 @@ class AIHubExposeBoolean(AIHubExposeBase):
 		self.on_change(widget.get_value())
 
 		for sibling in self.siblings:
-			if self.one_true and self.get_value():
+			if "one_true" in self.data and self.data["one_true"] and self.get_value():
 				sibling.widget.set_active(False)
-			if self.one_false and not self.get_value():
+			if self.data["one_false"] and not self.get_value():
 				sibling.widget.set_active(True)
 
 	def check_validity(self, value):
@@ -1631,12 +1828,6 @@ class AIHubExposeBoolean(AIHubExposeBase):
 	
 	def add_interacting_sibling(self, sibling):
 		self.siblings.append(sibling)
-
-	def mark_as_one_true(self):
-		self.one_true = True
-
-	def mark_as_one_false(self):
-		self.one_false = True
 
 class AIHubExposeString(AIHubExposeBase):
 	def get_special_priority(self):
@@ -1689,7 +1880,7 @@ class AIHubExposeString(AIHubExposeBase):
 		# ensure to add spacing from the top some margin top
 		self.box.set_margin_top(10)
 
-	def get_value(self, half_size=False):
+	def get_value(self, half_size=False, half_size_coords=False):
 		if (self.is_multiline):
 			return self.widget.get_buffer().get_text(
 				self.widget.get_buffer().get_start_iter(),
@@ -1697,15 +1888,44 @@ class AIHubExposeString(AIHubExposeBase):
 				True,
 			)
 		return self.widget.get_text()
+	
+	def check_for_unique_valid(self, value):
+		if not self.data.get("unique", False):
+			return True
+		
+		for sibling in self.siblings:
+			if sibling.get_value() == value and sibling != self:
+				return False
+			
+		return True
 
 	def get_widget(self):
 		return self.box
 
 	def on_change_value(self, widget):
+		for sibling in self.siblings:
+			sibling.check_validity(sibling.get_value())
+
 		self.on_change(self.get_value())
 
 	def after_ui_built(self, workflow_elements_all):
 		self.check_validity(self.get_value())
+
+		if "maxlen_expose_id" in self.data:
+			maxlen_expose_id_id = self.data["maxlen_expose_id"]
+			for expose in workflow_elements_all:
+				if expose.get_id() == maxlen_expose_id_id and isinstance(expose, (AIHubExposeInteger, AIHubExposeFloat, AIHubExposeProjectConfigInteger, AIHubExposeProjectConfigFloat)):
+					expose.add_change_event_listener(self.on_maxlen_widget_change)
+					self.on_maxlen_widget_change(expose.get_value())
+					self.maxlen_widget = expose
+
+		if "minlen_expose_id" in self.data:
+			minlen_expose_id_id = self.data["minlen_expose_id"]
+			for expose in workflow_elements_all:
+				if expose.get_id() == minlen_expose_id_id and isinstance(expose, (AIHubExposeInteger, AIHubExposeFloat, AIHubExposeProjectConfigInteger, AIHubExposeProjectConfigFloat)):
+					expose.add_change_event_listener(self.on_minlen_widget_change)
+					self.on_minlen_widget_change(expose.get_value())
+					self.minlen_widget = expose
 
 	def check_validity(self, value):
 		if not isinstance(value, str):
@@ -1717,33 +1937,33 @@ class AIHubExposeString(AIHubExposeBase):
 		elif "minlen" in self.data and len(value) < self.data["minlen"]:
 			self.error_label.show()
 			self.error_label.set_text(_("Value must be at least {} characters long").format(self.data['minlen']))
+		elif not self.check_for_unique_valid(value):
+			self.error_label.show()
+			self.error_label.set_text(_("Value must be unique among siblings"))
 		else:
 			self.error_label.hide()
 
 	def can_run(self):
-		if "maxlen" in self.data and len(self.get_value()) > self.data["maxlen"]:
+		value = self.get_value()
+		if "maxlen" in self.data and len(value) > self.data["maxlen"]:
 			return False
-		if "minlen" in self.data and len(self.get_value()) < self.data["minlen"]:
+		if "minlen" in self.data and len(value) < self.data["minlen"]:
 			return False
-		return True
+		return self.check_for_unique_valid(value)
 	
-	def add_maxlen_widget_constraint(self, maxlen_widget):
-		# when the maxlen_widget value changes, we need to update our maxlen value
-		def on_maxlen_widget_change(widget):
-			new_maxlen = widget.get_value()
-			self.data["maxlen"] = new_maxlen
-			self.check_validity(self.get_value())
-		
-		maxlen_widget.widget.connect("value-changed", on_maxlen_widget_change)
+	def on_maxlen_widget_change(self, value):
+		self.data["maxlen"] = int(value) + self.data.get("maxlen_expose_offset", 0)
+		self.check_validity(self.get_value())
 
-	def add_minlen_widget_constraint(self, minlen_widget):
-		# when the minlen_widget value changes, we need to update our minlen value
-		def on_minlen_widget_change(widget):
-			new_minlen = widget.get_value()
-			self.data["minlen"] = new_minlen
-			self.check_validity(self.get_value())
-		
-		minlen_widget.widget.connect("value-changed", on_minlen_widget_change)
+	def on_minlen_widget_change(self, value):
+		self.data["minlen"] = int(value) + self.data.get("minlen_expose_offset", 0)
+		self.check_validity(self.get_value())
+
+	def destroy(self):
+		if hasattr(self, "maxlen_widget"):
+			self.maxlen_widget.remove_change_event_listener(self.on_maxlen_widget_change)
+		if hasattr(self, "minlen_widget"):
+			self.minlen_widget.remove_change_event_listener(self.on_minlen_widget_change)
 
 class AIHubExposeStringSelection(AIHubExposeBase):
 	def __init__(self, id, data, workflow_context, workflow_id, workflow, project_current_timeline_path, project_saved_path, apinfo):
@@ -1799,7 +2019,7 @@ class AIHubExposeStringSelection(AIHubExposeBase):
 		self.box.pack_start(self.error_label.get_widget(), False, False, 0)
 		self.box.pack_start(self.widget, True, True, 0)
 
-	def get_value(self, half_size=False):
+	def get_value(self, half_size=False, half_size_coords=False):
 		return self.widget.get_active_id()
 
 	def get_widget(self):
@@ -1958,7 +2178,7 @@ class AIHubExposeProjectFileBase(AIHubExposeBase):
 
 		return _("Error uploading file {}: Unexpected server response").format(file_to_upload)
 	
-	def get_value(self, half_size=False):
+	def get_value(self, half_size=False, half_size_coords=False):
 		return {
 			"local_file": self.uploaded_file_path,
 		}
@@ -2104,41 +2324,41 @@ class AIHubExposeProjectFilesBase(AIHubExposeBase):
 
 			return _("Error uploading file {}: Unexpected server response").format(file_to_upload)
 	
-	def get_value(self, half_size=False):
+	def get_value(self, half_size=False, half_size_coords=False):
 		return {
 			"local_files": self.uploaded_file_paths,
 		}
 
 class AIHubExposeProjectConfigBase(AIHubExposeBase):
-	def get_value(self, half_size=False):
+	def get_value(self, half_size=False, half_size_coords=False):
 		value = self.read_project_config_json(self.data["field"])
 		if value is None:
 			value = self.data["default"]
 		return value
 
 class AIHubExposeProjectConfigString(AIHubExposeProjectConfigBase):
-	def get_value(self, half_size=False):
+	def get_value(self, half_size=False, half_size_coords=False):
 		parent_value = super().get_value()
 		if not isinstance(parent_value, str):
 			return self.data["default"]
 		return parent_value
 	
 class AIHubExposeProjectConfigInteger(AIHubExposeProjectConfigBase):
-	def get_value(self, half_size=False):
+	def get_value(self, half_size=False, half_size_coords=False):
 		parent_value = super().get_value()
 		if not isinstance(parent_value, int):
 			return self.data["default"]
 		return parent_value
 	
 class AIHubExposeProjectConfigBoolean(AIHubExposeProjectConfigBase):
-	def get_value(self, half_size=False):
+	def get_value(self, half_size=False, half_size_coords=False):
 		parent_value = super().get_value()
 		if not isinstance(parent_value, bool):
 			return self.data["default"]
 		return parent_value
 	
 class AIHubExposeProjectConfigFloat(AIHubExposeProjectConfigBase):
-	def get_value(self, half_size=False):
+	def get_value(self, half_size=False, half_size_coords=False):
 		parent_value = super().get_value()
 		if not isinstance(parent_value, float):
 			return self.data["default"]
@@ -2240,7 +2460,7 @@ class AIHubExposeLora(AIHubExposeBase):
 		self.strength = widget.get_value()
 		self.on_change(self.get_value())
 
-	def get_value(self, half_size=False):
+	def get_value(self, half_size=False, half_size_coords=False):
 		return {
 			"strength": self.slider.get_value(),
 			"enabled": self.enabled,
@@ -2591,7 +2811,7 @@ class AIHubExposeModel(AIHubExposeBase):
 			# cancel pressed destroy the dialog
 			dialog.destroy()
 		
-	def get_value(self, half_size=False):
+	def get_value(self, half_size=False, half_size_coords=False):
 		if self.model is None:
 			return None
 		
@@ -2707,41 +2927,135 @@ class AIHubExposeImageBatch(AIHubExposeBase):
 				ExposeClass = BATCH_EXPOSE_METADATA_TYPE_TO_EXPOSE_CLASS.get(type_of_field, "AIHubExposeString")
 				data = {
 					"label": field_label,
+					"metadata_id": field_structure_splitted[0],
 					"tooltip": None,
 				}
 				for extra_param in field_structure_splitted[2:]:
 					if extra_param.startswith("MAX:"):
 						default_value = extra_param[len("MAX:"):].strip()
 						try:
-							data["max"] = int(default_value) if type_of_field == "INT" else float(default_value)
+							value = int(default_value) if type_of_field == "INT" else float(default_value)
+							if "max" in data:
+								data["max"] = data["max"] + value
+							else:
+								data["max"] = value
+						except ValueError:
+							data["max_expose_id"] = default_value
+					elif extra_param.startswith("MAXOFFSET:"):
+						default_value = extra_param[len("MAXOFFSET:"):].strip()
+						try:
+							value = int(default_value) if type_of_field == "INT" else float(default_value)
+							data["max_expose_offset"] = value
+							if "max" in data:
+								data["max"] = data["max"] + value
+							else:
+								data["max"] = value
 						except ValueError:
 							pass
 					elif extra_param.startswith("MIN:"):
 						default_value = extra_param[len("MIN:"):].strip()
 						try:
-							data["min"] = int(default_value) if type_of_field == "INT" else float(default_value)
+							value = int(default_value) if type_of_field == "INT" else float(default_value)
+							if "min" in data:
+								data["min"] = data["min"] + value
+							else:
+								data["min"] = value
+						except ValueError:
+							data["min_expose_id"] = default_value
+					elif extra_param.startswith("MINOFFSET:"):
+						default_value = extra_param[len("MINOFFSET:"):].strip()
+						try:
+							value = int(default_value) if type_of_field == "INT" else float(default_value)
+							data["min_expose_offset"] = value
+							if "min" in data:
+								data["min"] = data["min"] + value
+							else:
+								data["min"] = value
 						except ValueError:
 							pass
 					elif extra_param.startswith("MAXLEN:"):
 						default_value = extra_param[len("MAXLEN:"):].strip()
 						try:
-							data["maxlen"] = int(default_value)
+							if "maxlen" in data:
+								data["maxlen"] = data["maxlen"] + int(default_value)
+							else:
+								data["maxlen"] = int(default_value)
+						except ValueError:
+							data["maxlen_expose_id"] = default_value
+					elif extra_param.startswith("MAXLENOFFSET:"):
+						default_value = extra_param[len("MAXLENOFFSET:"):].strip()
+						try:
+							data["maxlen_expose_offset"] = int(default_value)
+							if "maxlen" in data:
+								data["maxlen"] = data["maxlen"] + int(default_value)
+							else:
+								data["maxlen"] = int(default_value)
 						except ValueError:
 							pass
 					elif extra_param.startswith("MINLEN:"):
 						default_value = extra_param[len("MINLEN:"):].strip()
 						try:
-							data["minlen"] = int(default_value)
+							if "minlen" in data:
+								data["minlen"] = data["minlen"] + int(default_value)
+							else:
+								data["minlen"] = int(default_value)
+						except ValueError:
+							data["minlen_expose_id"] = default_value
+					elif extra_param.startswith("MINLENOFFSET:"):
+						default_value = extra_param[len("MINLENOFFSET:"):].strip()
+						try:
+							data["minlen_expose_offset"] = int(default_value)
+							if "minlen" in data:
+								data["minlen"] = data["minlen"] + int(default_value)
+							else:
+								data["minlen"] = int(default_value)
 						except ValueError:
 							pass
+					elif extra_param.startswith("DEFAULT:"):
+						default_value = extra_param[len("DEFAULT:"):].strip()
+						if type_of_field == "INT":
+							try:
+								data["value"] = int(default_value)
+							except ValueError:
+								pass
+						elif type_of_field == "FLOAT":
+							try:
+								data["value"] = float(default_value)
+							except ValueError:
+								pass
+						elif type_of_field == "BOOLEAN":
+							if default_value.lower() in ["true", "1", "t", "yes", "y"]:
+								data["value"] = True
+							else:
+								data["value"] = False
+						else:
+							data["value"] = default_value
 					elif extra_param == "MULTILINE":
 						data["multiline"] = True
+					elif extra_param == "ONE_TRUE":
+						data["one_true"] = True
+					elif extra_param == "ONE_FALSE":
+						data["one_false"] = True
+					elif extra_param == "UNIQUE":
+						data["unique"] = True
+					elif extra_param == "SORTED":
+						data["sorted"] = True
 			
 				metadata_expose = ExposeClass([self.id, len(self.list_of_expose_metadata_subexposes), "metadata", field_structure_splitted[0]], data, self.workflow_context, self.workflow_id, self.workflow, self.project_current_timeline_path, self.project_saved_path, self.apinfo)
+				metadata_expose.set_exposes_in_workflow(self.all_exposes_in_workflow)
 				expose_metadata_list.append(metadata_expose)
 				metadata_widget = metadata_expose.get_widget()
 				vbox.pack_start(metadata_widget, False, False, 0)
 			self.list_of_expose_metadata_subexposes.append(expose_metadata_list)
+
+			for field in range(0, len(metadata_fields_splitted)):
+				siblings_list = []
+				for expose_metadata_list in self.list_of_expose_metadata_subexposes:
+					subexpose_in_question = expose_metadata_list[field]
+					siblings_list.append(subexpose_in_question)
+				for expose_metadata_list in self.list_of_expose_metadata_subexposes:
+					subexpose_in_question = expose_metadata_list[field]
+					subexpose_in_question.set_siblings(siblings_list)
 
 		vbox.pack_start(delete_button, False, False, 0)
 		return vbox
@@ -2794,13 +3108,26 @@ class AIHubExposeImageBatch(AIHubExposeBase):
 		add_button.connect("clicked", self.on_add_expose)
 		self.box.pack_start(add_button, False, False, 0)
 
+	def set_exposes_in_workflow(self, all_exposes):
+		super().set_exposes_in_workflow(all_exposes)
+
+		for expose in self.list_of_exposes:
+			expose.set_exposes_in_workflow(all_exposes)
+
+		for expose_list in self.list_of_expose_metadata_subexposes:
+			for expose in expose_list:
+				expose.set_exposes_in_workflow(all_exposes)
+
 	def on_delete_expose(self, widget, expose):
 		widget_of_expose = None
 		for i in range(0, len(self.list_of_exposes)):
 			if self.list_of_exposes[i] == expose:
 				widget_of_expose = self.list_of_expose_widgets[i]
 				self.list_of_expose_widgets.pop(i)
-				self.list_of_expose_metadata_subexposes.pop(i)
+				expose.destroy()
+				subexposes = self.list_of_expose_metadata_subexposes.pop(i)
+				for subexpose in subexposes:
+					subexpose.destroy()
 				break
 
 		if not widget_of_expose:
@@ -2809,8 +3136,21 @@ class AIHubExposeImageBatch(AIHubExposeBase):
 		self.list_of_exposes.remove(expose)
 		# remove the widget from the Gtk box
 		self.innerbox.remove(widget_of_expose)
-
+		# we clear it up, we call onchange later anyway
 		self.on_change([])
+
+		metadata_fields_text = self.data.get("metadata_fields", "")
+		if metadata_fields_text is None or metadata_fields_text.strip() == "":
+			return
+		metadata_fields_splitted = [field.strip() for field in metadata_fields_text.split("\n")]
+		for field in range(0, len(metadata_fields_splitted)):
+			siblings_list = []
+			for expose_metadata_list in self.list_of_expose_metadata_subexposes:
+				subexpose_in_question = expose_metadata_list[field]
+				siblings_list.append(subexpose_in_question)
+			for expose_metadata_list in self.list_of_expose_metadata_subexposes:
+				subexpose_in_question = expose_metadata_list[field]
+				subexpose_in_question.set_siblings(siblings_list)
 
 		for i in range(0, len(self.list_of_exposes)):
 			expose = self.list_of_exposes[i]
@@ -2823,7 +3163,7 @@ class AIHubExposeImageBatch(AIHubExposeBase):
 			for element in metadata_fields_elements:
 				current_id = element.get_id()
 				element.change_id([self.id, i, "metadata", current_id[-1]])
-				element.on_change_value(None)
+				element.on_change_value(expose.get_value())
  
 	def on_add_expose(self, widget):
 		new_expose = AIHubExposeImage([self.id, len(self.list_of_exposes), "value"], {
@@ -2831,27 +3171,34 @@ class AIHubExposeImageBatch(AIHubExposeBase):
 			"type": "upload",
 			"tooltip": self.data["tooltip"] if "tooltip" in self.data else None,
 		}, self.workflow_context, self.workflow_id, self.workflow, self.project_current_timeline_path, self.project_saved_path, self.apinfo)
+		new_expose.set_exposes_in_workflow(self.all_exposes_in_workflow)
 		self.list_of_exposes.append(new_expose)
 		new_widget = self.create_widget_for_expose(new_expose)
 		self.list_of_expose_widgets.append(new_widget)
 		self.innerbox.pack_start(new_widget, True, True, 0)
 		new_widget.show_all()
-		new_expose.after_ui_built(None)
+		new_expose.after_ui_built(self.all_exposes_in_workflow)
 		for element in self.list_of_expose_metadata_subexposes[-1]:
 			element.get_widget().show_all()
-			element.after_ui_built(None)
+			element.after_ui_built(self.all_exposes_in_workflow)
 
 	def get_widget(self):
 		return self.box
 
-	def get_value(self, half_size=False):
+	def get_value(self, half_size=False, half_size_coords=False):
 		return {
 			"local_files": [expose.get_value().get("local_file", None) for expose in self.list_of_exposes],
 			"metadata": json.dumps(self.get_metadata())
 		}
 	
 	def get_metadata(self):
-		return []
+		metadata = []
+		for expose_metadata_list in self.list_of_expose_metadata_subexposes:
+			metadata_entry = {}
+			for expose_element in expose_metadata_list:
+				metadata_entry[expose_element.data.get("metadata_id", "")] = expose_element.get_value()
+			metadata.append(metadata_entry)
+		return metadata
 	
 	def upload_binary(self, ws, relegator=None, half_size=False):
 		for expose in self.list_of_exposes:
@@ -2862,6 +3209,16 @@ class AIHubExposeImageBatch(AIHubExposeBase):
 	
 	def can_run(self):
 		return self.data["maxlen"] >= len(self.list_of_exposes) >= self.data["minlen"] and all([expose.can_run() for expose in self.list_of_exposes])
+	
+	def after_ui_built(self, workflow_elements_all):
+		super().after_ui_built(workflow_elements_all)
+
+		for expose in self.list_of_exposes:
+			expose.after_ui_built(workflow_elements_all)
+
+		for expose_list in self.list_of_expose_metadata_subexposes:
+			for expose in expose_list:
+				expose.after_ui_built(workflow_elements_all)
 
 EXPOSES = {
 	"AIHubExposeInteger": AIHubExposeInteger,

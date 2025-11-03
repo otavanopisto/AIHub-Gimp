@@ -257,10 +257,10 @@ def process_last_collected_files(current_image, project_is_real, half_size=False
 							print("Error copying file to user location:", e)
 		else:
 			finalpath = collected["path"]
-			if action["action"] == "NEW_IMAGE" or (action["action"] == "NEW_LAYER" and current_image is None):
-				# when real projects we do not open the image automatically
-				if not project_is_real:
-					open_project_file_as_image(finalpath)
+			# new image with autoopen option, or new layer to empty image in non-real project which would otherwise mean the user loses the image
+			# weird workflow but may occur
+			if (action["action"] == "NEW_IMAGE" and action.get("autoopen", False)) or (not project_is_real and (action["action"] == "NEW_LAYER" and current_image is None)):
+				open_project_file_as_image(finalpath)
 			elif action["action"] == "NEW_LAYER":
 				pos_x = action.get("pos_x", 0)
 				pos_y = action.get("pos_y", 0)
@@ -337,8 +337,8 @@ def process_last_collected_files(current_image, project_is_real, half_size=False
 						except Exception as e:
 							print("Error moving file to user location:", e)
 	
-					if action["action"] == "NEW_VIDEO" or action["action"] == "NEW_AUDIO":
-						open_with_default_app_afterwards.append(finalpath)
+				if action.get("autoplay", False):
+					open_with_default_app_afterwards.append(finalpath)
 			
 			if should_delete_file_afterwards and os.path.exists(finalpath):
 				try:
@@ -365,7 +365,6 @@ def handle_project_file(
 	finalpath = store_project_file(timeline_path, project_is_real, file_name, file_action, bytes, separator, protected_run_mode)
 
 	if "batch_index" in action and action["batch_index"] is not None:
-		# when real projects we do not open any batch automatically
 		found_existing_entry = False
 		for entry in last_collected_files:
 			if entry["action"]["file_name"] == file_name:
@@ -501,7 +500,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 							self.setErrored()
 					elif message_parsed["type"] == "ERROR":
 						if self.is_running:
-							self.mark_as_running(False, _("Status: Error received from server \"{}\"").format(message_parsed.get('message', _('Unknown error'))))
+							self.mark_as_running(False, _("Status: Error received from server \"{}\"").format(message_parsed.get('message', _('Unknown error'))), error=True)
 						else:
 							self.setStatus(_("Status: Error received from server \"{}\"").format(message_parsed.get('message', _('Unknown error'))))
 					elif message_parsed["type"] == "STATUS":
@@ -543,7 +542,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 						self.current_run_id = None
 						if self.is_running:
 							if message_parsed["error"]:
-								self.mark_as_running(False, _("Status: Workflow finished with error: {}").format(message_parsed.get('error_message', _('No message provided'))))
+								self.mark_as_running(False, _("Status: Workflow finished with error: {}").format(message_parsed.get('error_message', _('No message provided'))), error=True)
 							else:
 								self.mark_as_running(False, _("Status: Workflow finished successfully; ready for another run"))
 
@@ -719,6 +718,11 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 
 			self.workflow_selector.set_tooltip_text(_("Select the workflow that you want to use, each workflow has their own set of options and parameters"))
 
+			self.special_workflows_selector = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+			self.main_box.pack_start(self.special_workflows_selector, False, False, 0)
+
+			self.calculate_special_workflows()
+
 			self.half_size_checkbox = Gtk.CheckButton(label=_("Use Half Size"))
 			self.half_size_checkbox.set_tooltip_text(_("If enabled, the workflow will be run at half the size of the original image, this can help speed up processing at the cost of quality"))
 			self.main_box.pack_start(self.half_size_checkbox, False, False, 0)
@@ -878,7 +882,8 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 					default_category = self.workflow_categories[selected_context][0]
 
 				# we are going to make the default selected to be the first one in our list of categories in workflow_categories
-				self.category_selector.set_active_id(default_category)
+				if not self.freeze_selector_renders:
+					self.category_selector.set_active_id(default_category)
 
 				#self.on_category_selected(self.category_selector)
 			except Exception as e:
@@ -983,7 +988,8 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 				#self.main_box.show_all()
 
 				# we are going to make the default selected to be the first one in our list of workflows in workflows
-				self.workflow_selector.set_active_id(default_workflow)
+				if not self.freeze_selector_renders:
+					self.workflow_selector.set_active_id(default_workflow)
 
 			#self.on_workflow_selected(self.workflow_selector)
 			except Exception as e:
@@ -1018,7 +1024,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 					self.description_label.get_buffer().set_text(workflow["description"])
 
 				# Update the default workflow for the current context and category
-				update_aihub_common_property_value("", selected_context + "/" + self.category_selector.get_active_id(), "default_workflow", selected_workflow, None)
+				update_aihub_common_property_value("", selected_context + "/" + self.category_selector.get_active_id(), "default_workflow", selected_workflow, self.project_saved_config_json_file)
 
 				# now let's clear the workflow box
 				self.workflow_elements.foreach(Gtk.Widget.destroy)
@@ -1432,7 +1438,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 				self.setErrored()
 				return
 		
-		def mark_as_running(self, running: bool, messageOverride: str = None):
+		def mark_as_running(self, running: bool, messageOverride: str = None, error: bool = False):
 			def do_action():
 				self.is_running = running
 
@@ -1460,8 +1466,10 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 					Gimp.displays_flush()
 					self.on_dialog_focus(None, None)
 
-				if not running:
+				if not running and not error:
 					process_last_collected_files(self.selected_image, self.project_is_real, self.half_size, self.half_size_coords)
+				elif not running and error and self.project_is_real:
+					self.rollback_timeline_to_last_valid_state()
 
 				if hasattr(self, "project_dialog") and self.project_dialog is not None and self.project_is_real and not running:
 					self.project_dialog.refresh(self.project_file_contents, self.project_current_timeline_folder)
@@ -1518,6 +1526,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 			self.connected: bool = False
 
 			self.protected_run_mode: bool = False
+			self.freeze_selector_renders = False
 
 			self.message_label: Gtk.TextView
 			self.websocket: WebSocketApp
@@ -2061,6 +2070,11 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 					self.project_file_contents = project_absolute_config
 					current_timeline_id = self.project_file_contents.get("current_timeline", None)
 					if current_timeline_id is None:
+						for timeline in self.project_file_contents.get("timelines", {}).values():
+							if timeline.get("initial", False):
+								current_timeline_id = timeline.get("id", None)
+								break
+					if current_timeline_id is None:
 						self.project_current_timeline_folder = None
 					else:
 						self.project_current_timeline_folder = os.path.join(self.project_folder, "timelines", current_timeline_id)
@@ -2247,17 +2261,19 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 				if not os.path.isdir(self.project_current_timeline_folder):
 					os.makedirs(self.project_current_timeline_folder)
 
-				# now such timeline inherits everything from the previous timeline
-				# so we copy the entire structure into our new timeline folder
-				previous_timeline_folder = os.path.join(self.project_folder, "timelines", self.project_file_contents["timelines"][new_timeline_id]["parent_id"])
-				if previous_timeline_folder is not None:
-					try:
-						if os.path.isdir(previous_timeline_folder):
-							shutil.copytree(previous_timeline_folder, self.project_current_timeline_folder, dirs_exist_ok=True)
-					except Exception as e:
-						self.setStatus(_("Error: Failed to copy timeline data: {}").format(str(e)))
-						self.setErrored()
-						return
+				if not is_initial:
+					# now such timeline inherits everything from the previous timeline
+					# so we copy the entire structure into our new timeline folder
+					previous_timeline_id = self.project_file_contents["timelines"][new_timeline_id]["parent_id"]
+					if previous_timeline_id is not None:
+						previous_timeline_folder = os.path.join(self.project_folder, "timelines", previous_timeline_id)
+						try:
+							if os.path.isdir(previous_timeline_folder):
+								shutil.copytree(previous_timeline_folder, self.project_current_timeline_folder, dirs_exist_ok=True)
+						except Exception as e:
+							self.setStatus(_("Error: Failed to copy timeline data: {}").format(str(e)))
+							self.setErrored()
+							return
 				
 				if is_initial:
 					self.setStatus(_("Status: Created new alternate timeline '{}'").format(new_timeline_name))
@@ -2273,6 +2289,37 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 				self.setStatus(_("Error: No project is currently opened"))
 				self.setErrored()
 				return
+			
+		def rollback_timeline_to_last_valid_state(self):
+			if self.errored:
+				return
+
+			if not self.project_is_real or self.project_file_contents is None:
+				self.setStatus(_("Error: No project is currently opened"))
+				return
+
+			current_timeline_id = self.project_file_contents.get("current_timeline", None)
+			if current_timeline_id is None:
+				self.setStatus(_("Error: No timeline is currently selected"))
+				return
+
+			current_timeline_info = self.project_file_contents.get("timelines", {}).get(current_timeline_id, {})
+			timeline_to_rollback_to = current_timeline_info.get("parent_id", None)
+
+			# set the current timeline to the parent
+			# delete the current timeline from the timelines list
+			self.project_file_contents["timelines"].pop(current_timeline_id, None)
+			# delete the current timeline folder
+			current_timeline_folder = os.path.join(self.project_folder, "timelines", current_timeline_id)
+
+			try:
+				if os.path.isdir(current_timeline_folder):
+					shutil.rmtree(current_timeline_folder)
+			except Exception as e:
+				self.setStatus(_("Error: Failed to delete timeline data: {}").format(str(e)))
+			
+			self.project_file_contents["current_timeline"] = timeline_to_rollback_to
+			self.on_change_project_file(self.project_file_contents)
 	
 		def on_dialog_focus(self, widget, event):
 			if self.errored or self.is_running:
@@ -2289,6 +2336,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 
 		def on_project_opened(self):
 			update_aihub_common_property_value("", "", "last_opened_project", self.project_file, None)
+			self.calculate_special_workflows()
 			for element in self.workflow_elements_all:
 				element.update_project_current_timeline_path_and_saved_path(self.project_current_timeline_folder, self.project_saved_config_json_file)
 			if (threading.current_thread() is threading.main_thread()):
@@ -2302,10 +2350,48 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 			# force a reset like this
 			self.on_category_selected(self.category_selector)
 			update_aihub_common_property_value("", "", "last_opened_project", None, None)
+			self.clear_special_workflows()
 			if (threading.current_thread() is threading.main_thread()):
 				self.setup_project_ui()
 			else:
 				GLib.idle_add(self.setup_project_ui)
+
+		def clear_special_workflows(self):
+			for child in self.special_workflows_selector.get_children():
+				self.special_workflows_selector.remove(child)
+
+		def on_special_workflow_selected(self, workflow):
+			if self.errored or self.is_running:
+				return
+			# find the category of this workflow
+			workflow_category = workflow.get("category", None)
+			context = workflow.get("context", None)
+			# set the category selector to this category
+			self.freeze_selector_renders = True
+			self.context_selector.set_active_id(context)
+			self.category_selector.set_active_id(workflow_category)
+			self.freeze_selector_renders = False
+			# now the category selected handler will have populated the workflow elements
+			self.workflow_selector.set_active_id(workflow["id"])
+
+		def calculate_special_workflows(self):
+			self.clear_special_workflows()
+			if not self.project_is_real or self.project_file_contents is None:
+				return
+			project_type = self.project_file_contents.get("project_type", None)
+			if project_type is None:
+				return
+			special_workflows = []
+			for workflow in self.workflows.values():
+				if workflow.get("project_type") == project_type and not workflow.get("project_type_init", False):
+					special_workflows.append(workflow)
+			if len(special_workflows) > 0:
+				for workflow in special_workflows:
+					workflow_button = Gtk.Button(label=workflow["label"])
+					workflow_button.set_tooltip_text(_("Click to select the special workflow '{}' for the current project").format(workflow["label"]))
+					workflow_button.connect("clicked", lambda button, w=workflow: self.on_special_workflow_selected(w))
+					self.special_workflows_selector.pack_start(workflow_button, False, False, 0)
+				self.special_workflows_selector.show_all()
 
 		def complete_steps_after_new_empty_project(self, error):
 			def do_action():

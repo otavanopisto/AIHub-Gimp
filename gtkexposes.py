@@ -64,8 +64,23 @@ class AIHubExposeBase:
 		self.project_current_timeline_path = new_timeline_path
 		self.project_saved_path = new_saved_path
 
+	def parse_index(self, index_str):
+		try:
+			return int(index_str)
+		except:
+			# we will try to see if it is a variable from the config
+			stripped = index_str.strip()
+			sign = ""
+			if stripped.startswith("+") or stripped.startswith("-"):
+				sign = stripped[0]
+				stripped = stripped[1:].strip()
+			value = self.read_project_config_json(stripped)
+			if value is not None and isinstance(value, int):
+				return value if sign == "" else (value if sign == "+" else -value)
+			raise ValueError("Invalid index string for config file, could not find a valid integer: {}".format(index_str))
+
 	def read_project_config_json(self, key):
-		if not self.projectname or self.projectname == "":
+		if not self.project_saved_path or self.project_saved_path == "":
 			return None
 		
 		timeline_config_path = os.path.join(self.project_current_timeline_path, "config.json")
@@ -400,6 +415,9 @@ class AIHubExposeImage(AIHubExposeBase):
 						(gfile, ) = save_image_file(gimp_image, file_to_upload, half_size=half_size)
 			else:
 				# nothing selected
+				if self.data.get("optional", False):
+					# optional, so we can skip, mark it as successful
+					return True
 				return False
 		else:
 			load_type = self.data.get("type", "upload")
@@ -533,6 +551,9 @@ class AIHubExposeImage(AIHubExposeBase):
 						Gimp.displays_flush()
 			else:
 				# no image selected
+				if self.data.get("optional", False):
+					# optional, so we can skip, mark it as successful
+					return True
 				return False
 			
 		# now we need to make a calculation for a hash of the file to upload
@@ -747,7 +768,8 @@ class AIHubExposeImage(AIHubExposeBase):
 				selected_layer = selected_layers[0]
 				id_of_image = self.current_image.get_id()
 				id_of_layer = selected_layer.get_id()
-				file_to_upload = os.path.join(GLib.get_tmp_dir(), f"aihub_temp_file_{id_of_image}_layer_extract_{id_of_layer}.webp")
+				random_number = random.randint(1000, 9999)
+				file_to_upload = os.path.join(GLib.get_tmp_dir(), f"aihub_temp_file_{id_of_image}_layer_extract_{id_of_layer}_{random_number}.webp")
 				gfile = Gio.File.new_for_path(file_to_upload)
 				
 				new_image = Gimp.Image.new(self.current_image.get_width(), self.current_image.get_height(), self.current_image.get_base_type())
@@ -1064,6 +1086,7 @@ class AIHubExposeImage(AIHubExposeBase):
 				self.select_combo.set_model(model)
 				if model is not None and len(model) > 0:
 					self.select_combo.set_active(0)
+			self.load_image_preview()
 		else:
 			self.load_image_data_for_internal()
 
@@ -1118,9 +1141,8 @@ class AIHubExposeImage(AIHubExposeBase):
 				self.success_label.hide()
 
 	def can_run(self):
-		value_width_and_height_valid = self.value_width > 0 and self.value_height > 0
-		if not value_width_and_height_valid:
-			return False
+		if self.data.get("optional", False):
+			return True
 		if (not self.is_using_internal_file()):
 			return self.selected_filename is not None or self.select_combo.get_active() != -1
 		else:
@@ -1170,12 +1192,22 @@ class AIHubExposeFileBase(AIHubExposeBase):
 
 		self.box: Gtk.Box = None
 
+		self.select_from_timeline_files_button: Gtk.Button = None
+		self.select_from_timeline_files_button = Gtk.Button(label=_("Select from Timeline Files"), xalign=0)
+		self.select_from_timeline_files_button.connect("clicked", self.on_select_from_timeline_files_clicked)
+
+		self.select_from_project_files_button: Gtk.Button = None
+		self.select_from_project_files_button = Gtk.Button(label=_("Select from Project Files"), xalign=0)
+		self.select_from_project_files_button.connect("clicked", self.on_select_from_project_files_clicked)
+
 		self.label = Gtk.Label(self.data["label"], xalign=0)
 		self.label.set_size_request(400, -1)
 		self.label.set_line_wrap(True)
 		self.box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
 		self.box.pack_start(self.label, False, False, 0)
 		self.box.pack_start(self.select_button, False, False, 0)
+		self.box.pack_start(self.select_from_timeline_files_button, False, False, 0)
+		self.box.pack_start(self.select_from_project_files_button, False, False, 0)
 		self.error_label = AIHubLabel("", b"color: red;")
 		self.success_label = AIHubLabel("", b"color: green;")
 		self.box.pack_start(self.success_label.get_widget(), False, False, 0)
@@ -1237,9 +1269,17 @@ class AIHubExposeFileBase(AIHubExposeBase):
 			self.error_label.hide()
 
 	def can_run(self):
+		if self.data.get("optional", False):
+			return True
 		return self.selected_filename is not None and os.path.exists(self.selected_filename)
 	
 	def upload_binary(self, ws, relegator=None, half_size=False):
+		self.uploaded_file_path = None
+
+		if self.selected_filename is None and self.data.get("optional", False):
+			# optional file, no file selected
+			return True
+
 		# now we need to make a calculation for a hash of the file to upload
 		hash_md5 = hashlib.md5()
 		# make a new binary data to upload
@@ -1306,6 +1346,84 @@ class AIHubExposeFileBase(AIHubExposeBase):
 
 		return _("Error uploading file {}: Unexpected server response").format(self.selected_filename)
 	
+	def update_project_current_timeline_path_and_saved_path(self, project_current_timeline_path, project_saved_path):
+		super().update_project_current_timeline_path_and_saved_path(project_current_timeline_path, project_saved_path)
+
+		# we will use this to know the project has updated
+		if (project_saved_path is not None):
+			self.select_from_timeline_files_button.show()
+			self.select_from_project_files_button.show()
+		else:
+			self.select_from_timeline_files_button.hide()
+			self.select_from_project_files_button.hide()
+
+	def on_select_from_timeline_files_clicked(self, widget):
+		if self.project_saved_path is None:
+			return
+		
+		dialog = Gtk.FileChooserDialog(
+			title=self.data["label"],
+			parent=None,
+			action=Gtk.FileChooserAction.OPEN,
+			buttons=(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, Gtk.STOCK_OPEN, Gtk.ResponseType.OK)
+		)
+		Gtk.Window.set_keep_above(dialog, True)
+
+		dialog.set_current_folder(os.path.join(self.project_current_timeline_path, "files"))
+
+		file_filter = Gtk.FileFilter()
+		file_filter.set_name(self.file_types_label)
+		for pattern in self.file_types:
+			file_filter.add_pattern(pattern)
+		dialog.add_filter(file_filter)
+
+		response = dialog.run()
+		if response == Gtk.ResponseType.OK:
+			filename = dialog.get_filename()
+			self.select_button.set_label(os.path.basename(filename) + " (" + _("Click to change") + ")")
+			self.selected_filename = filename
+			self.on_file_selected()
+		dialog.destroy()
+
+	def on_select_from_project_files_clicked(self, widget):
+		if self.project_saved_path is None:
+			return
+		
+		dialog = Gtk.FileChooserDialog(
+			title=self.data["label"],
+			parent=None,
+			action=Gtk.FileChooserAction.OPEN,
+			buttons=(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, Gtk.STOCK_OPEN, Gtk.ResponseType.OK)
+		)
+		Gtk.Window.set_keep_above(dialog, True)
+
+		# path to project files
+		dialog.set_current_folder(os.path.join(os.path.dirname(self.project_saved_path), "project_files"))
+
+		file_filter = Gtk.FileFilter()
+		file_filter.set_name(self.file_types_label)
+		for pattern in self.file_types:
+			file_filter.add_pattern(pattern)
+		dialog.add_filter(file_filter)
+
+		response = dialog.run()
+		if response == Gtk.ResponseType.OK:
+			filename = dialog.get_filename()
+			self.select_button.set_label(os.path.basename(filename) + " (" + _("Click to change") + ")")
+			self.selected_filename = filename
+			self.on_file_selected()
+		dialog.destroy()
+
+	def after_ui_built(self, workflow_elements_all):
+		super().after_ui_built(workflow_elements_all)
+	
+		if (self.project_saved_path is not None):
+			self.select_from_timeline_files_button.show()
+			self.select_from_project_files_button.show()
+		else:
+			self.select_from_timeline_files_button.hide()
+			self.select_from_project_files_button.hide()
+	
 class AIHubExposeAudio(AIHubExposeFileBase):
 	def __init__(self, id, data, workflow_context, workflow_id, workflow, project_current_timeline_path, project_saved_path, apinfo):
 		super().__init__(id, data, workflow_context, workflow_id, workflow, project_current_timeline_path, project_saved_path, apinfo,
@@ -1320,6 +1438,14 @@ class AIHubExposeVideo(AIHubExposeFileBase):
 			select_button_label=_("Select a video file"),
 			file_types=["*.mp4", "*.mov", "*.avi", "*.mkv"],
 			file_types_label=_("Video files")
+		)
+
+class AIHubExposeLatent(AIHubExposeFileBase):
+	def __init__(self, id, data, workflow_context, workflow_id, workflow, project_current_timeline_path, project_saved_path, apinfo):
+		super().__init__(id, data, workflow_context, workflow_id, workflow, project_current_timeline_path, project_saved_path, apinfo,
+			select_button_label=_("Select a latent file"),
+			file_types=["*.safetensors"],
+			file_types_label=_("Latent files")
 		)
 
 class AIHubExposeInteger(AIHubExposeBase):
@@ -2081,13 +2207,15 @@ class AIHubExposeProjectFileBase(AIHubExposeBase):
 		self.uploaded_file_path: str = None
 
 	def upload_binary(self, ws, relegator=None, half_size=False):
+		self.uploaded_file_path = None
+
 		file_name = self.data.get("file_name", None)
 		batch_index = self.data.get("batch_index", "")
-		file_to_upload = os.path.join(self.project_current_timeline_path, file_name)
+		file_to_upload = os.path.join(self.project_current_timeline_path, "files", file_name)
 		if batch_index.strip() != "":
 			batch_index_as_int = 0
 			try:
-				batch_index_as_int = int(batch_index)
+				batch_index_as_int = self.parse_index(batch_index)
 			except:
 				batch_index_as_int = 0
 			# however there may be gaps in the numbering, due to potentially deleted files
@@ -2095,7 +2223,7 @@ class AIHubExposeProjectFileBase(AIHubExposeBase):
 			matching_files = []
 			prefix = os.path.splitext(file_name)[0] + "_"
 			extension = os.path.splitext(file_name)[1]
-			for f in os.listdir(self.project_current_timeline_path):
+			for f in os.listdir(os.path.join(self.project_current_timeline_path, "files")):
 				if f.startswith(prefix) and f.endswith(extension):
 					# check if the middle part is an integer
 					middle_part = f[len(prefix):-len(extension)]
@@ -2109,8 +2237,15 @@ class AIHubExposeProjectFileBase(AIHubExposeBase):
 			if batch_index_as_int < 0:
 				batch_index_as_int = len(matching_files) + batch_index_as_int
 			if batch_index_as_int < 0 or batch_index_as_int >= len(matching_files):
+				if self.data.get("optional", False):
+					return True  # skip upload if optional
 				return _("The specified batch index {} is out of range for files matching {}").format(batch_index, file_name)
-			file_to_upload = os.path.join(self.project_current_timeline_path, matching_files[batch_index_as_int]["file"])
+			file_to_upload = os.path.join(self.project_current_timeline_path, "files", matching_files[batch_index_as_int]["file"])
+
+		if not os.path.isfile(file_to_upload):
+			if self.data.get("optional", False):
+				return True  # skip upload if optional
+			return _("File to upload does not exist: {}").format(file_to_upload)
 
 		# now we need to make a calculation for a hash of the file to upload
 		hash_md5 = hashlib.md5()
@@ -2196,10 +2331,12 @@ class AIHubExposeProjectFilesBase(AIHubExposeBase):
 
 		self.uploaded_file_paths = []
 
+		files_path = os.path.join(self.project_current_timeline_path, "files")
+
 		matching_files = []
 		prefix = os.path.splitext(file_name)[0] + "_"
 		extension = os.path.splitext(file_name)[1]
-		for f in os.listdir(self.project_current_timeline_path):
+		for f in os.listdir(files_path):
 			if f.startswith(prefix) and f.endswith(extension):
 				# check if the middle part is an integer
 				middle_part = f[len(prefix):-len(extension)]
@@ -2215,7 +2352,7 @@ class AIHubExposeProjectFilesBase(AIHubExposeBase):
 		if indexes.strip() == "":
 			# upload all matching files
 			for match in matching_files:
-				files_to_upload.append(os.path.join(self.project_current_timeline_path, match["file"]))
+				files_to_upload.append(os.path.join(self.project_current_timeline_path, "files", match["file"]))
 		elif "," in indexes:
 			# multiple indexes specified
 			for index_part in indexes.split(","):
@@ -2223,14 +2360,14 @@ class AIHubExposeProjectFilesBase(AIHubExposeBase):
 				if index_part != "":
 					batch_index_as_int = 0
 					try:
-						batch_index_as_int = int(index_part)
+						batch_index_as_int = self.parse_index(index_part)
 					except:
 						batch_index_as_int = 0
 					if batch_index_as_int < 0:
 						batch_index_as_int = len(matching_files) + batch_index_as_int
 					if batch_index_as_int < 0 or batch_index_as_int >= len(matching_files):
 						return _("The specified batch index {} is out of range for files matching {}").format(batch_index_as_int, file_name)
-					files_to_upload.append(os.path.join(self.project_current_timeline_path, matching_files[batch_index_as_int]["file"]))
+					files_to_upload.append(os.path.join(self.project_current_timeline_path, "files", matching_files[batch_index_as_int]["file"]))
 		elif ":" in indexes:
 			# range of indexes specified
 			parts = indexes.split(":")
@@ -2239,11 +2376,11 @@ class AIHubExposeProjectFilesBase(AIHubExposeBase):
 			start_index = 0
 			end_index = 0
 			try:
-				start_index = int(parts[0].strip())
+				start_index = self.parse_index(parts[0].strip())
 			except:
 				start_index = 0
 			try:
-				end_index = int(parts[1].strip())
+				end_index = self.parse_index(parts[1].strip())
 			except:
 				end_index = -1
 			if start_index < 0:
@@ -2253,7 +2390,7 @@ class AIHubExposeProjectFilesBase(AIHubExposeBase):
 			if start_index < 0 or end_index >= len(matching_files) or start_index > end_index:
 				return _("The specified batch index range {} is out of range for files matching {}").format(indexes, file_name)
 			for i in range(start_index, end_index + 1):
-				files_to_upload.append(os.path.join(self.project_current_timeline_path, matching_files[i]["file"]))
+				files_to_upload.append(os.path.join(self.project_current_timeline_path, "files", matching_files[i]["file"]))
 
 		for file_to_upload in files_to_upload:
 			# now we need to make a calculation for a hash of the file to upload
@@ -2326,6 +2463,7 @@ class AIHubExposeProjectFilesBase(AIHubExposeBase):
 	
 	def get_value(self, half_size=False, half_size_coords=False):
 		return {
+			# server expects a comma separated list of file paths
 			"local_files": self.uploaded_file_paths,
 		}
 
@@ -3177,9 +3315,11 @@ class AIHubExposeImageBatch(AIHubExposeBase):
 		self.list_of_expose_widgets.append(new_widget)
 		self.innerbox.pack_start(new_widget, True, True, 0)
 		new_widget.show_all()
+		new_expose.current_image_changed(self.current_image, self.image_model)
 		new_expose.after_ui_built(self.all_exposes_in_workflow)
 		for element in self.list_of_expose_metadata_subexposes[-1]:
 			element.get_widget().show_all()
+			element.current_image_changed(self.current_image, self.image_model)
 			element.after_ui_built(self.all_exposes_in_workflow)
 
 	def get_widget(self):
@@ -3220,6 +3360,16 @@ class AIHubExposeImageBatch(AIHubExposeBase):
 			for expose in expose_list:
 				expose.after_ui_built(workflow_elements_all)
 
+	def current_image_changed(self, image, model):
+		super().current_image_changed(image, model)
+
+		for expose in self.list_of_exposes:
+			expose.current_image_changed(image, model)
+
+		for expose_list in self.list_of_expose_metadata_subexposes:
+			for expose in expose_list:
+				expose.current_image_changed(image, model)
+
 EXPOSES = {
 	"AIHubExposeInteger": AIHubExposeInteger,
 	"AIHubExposeFloat": AIHubExposeFloat,
@@ -3246,6 +3396,7 @@ EXPOSES = {
 	"AIHubExposeAudio": AIHubExposeAudio,
 	"AIHubExposeVideo": AIHubExposeVideo,
 	"AIHubExposeFrame": AIHubExposeFrame,
+	"AIHubExposeLatent": AIHubExposeLatent,
 
 	"AIHubExposeProjectAudio": AIHubExposeProjectFileBase,
 	"AIHubExposeProjectVideo": AIHubExposeProjectFileBase,

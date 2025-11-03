@@ -8,6 +8,7 @@ import sys
 import urllib.request
 import zipfile
 import subprocess
+from shutil import copyfile
 
 import gettext
 _ = gettext.gettext
@@ -34,7 +35,7 @@ FFMPEG_SOURCES = {
 }
 
 class FrameByFrameVideoVideoViewer(Gtk.Dialog):
-    def __init__(self, file_path, parent):
+    def __init__(self, file_path, parent, project_files_path):
         title = os.path.basename(file_path)
         super().__init__(title=title, transient_for=parent, flags=0)
 
@@ -44,6 +45,9 @@ class FrameByFrameVideoVideoViewer(Gtk.Dialog):
         self.set_resizable(True)
         self.set_deletable(True)
         self.set_position(Gtk.WindowPosition.CENTER)
+        self.parent = parent
+
+        self.project_files_path = project_files_path
 
         self.file_path = file_path
         self.images_path = None
@@ -52,6 +56,7 @@ class FrameByFrameVideoVideoViewer(Gtk.Dialog):
         self.has_next_frame = False
         self.total_frames = 0
         self.has_set_event_listeners = False
+        self.fps = None
 
         self.message_label = Gtk.TextView()
         self.message_label.set_editable(False)
@@ -178,10 +183,87 @@ class FrameByFrameVideoVideoViewer(Gtk.Dialog):
             return True  # Stop further handling
 
         self.connect("key-press-event", on_key_press)
+
+        # add a second click menu for custom actions
+        self.image.set_tooltip_text(_("Right-click for options"))
+        def on_button_press(widget, event):
+            if event.type == Gdk.EventType.BUTTON_PRESS and event.button == Gdk.BUTTON_SECONDARY:
+                menu = Gtk.Menu()
+
+                export_video_item = Gtk.MenuItem(label=_("Export Video"))
+                export_video_item.connect("activate", lambda x: self.export_video())
+                menu.append(export_video_item)
+
+                # add a divider
+                separator = Gtk.SeparatorMenuItem()
+                menu.append(separator)
+
+                edit_item = Gtk.MenuItem(label=_("Edit in Gimp"))
+                edit_item.connect("activate", lambda x: self.edit_in_gimp())
+                menu.append(edit_item)
+
+                replace_item = Gtk.MenuItem(label=_("Replace from Gimp Frame"))
+                replace_item.connect("activate", lambda x: self.replace_from_gimp_frame())
+                menu.append(replace_item)
+
+                # TODO add custom workflows here that fit frame by frame criteria
+
+                menu.show_all()
+                menu.popup_at_pointer(event)
+                return True  # Stop further handling
+            return False
+        self.connect("button-press-event", on_button_press)
         self.has_set_event_listeners = True
 
-        # TODO add a menu for the image on second click that allows to extract the current frame
-        # to a new image in gimp, and also replace the frame with an image from gimp
+    def edit_in_gimp(self):
+        current_frame_path = os.path.join(self.images_path, f"frame_{(self.current_frame + 1):08d}.png")
+        if os.path.exists(current_frame_path):
+            self.parent.on_import_file(current_frame_path)
+        else:
+            self.setStatus(_("Frame {} not found").format(current_frame_path))
+
+    def replace_from_gimp_frame(self):
+        #TODO implement getting the current image from GIMP
+        return
+
+    def export_video(self):
+        # call ffmpeg to export the frames as a video
+        self.setStatus(_("Exporting video..."))
+        def run():
+            try:
+                basename = os.path.splitext(os.path.basename(self.file_path))[0]
+                output_video_path = os.path.join(self.project_files_path, f"{basename}_export.mp4")
+                n = 1
+                while os.path.exists(output_video_path):
+                    output_video_path = os.path.join(self.project_files_path, f"{basename}_export_{n}.mp4")
+                    n += 1
+                thumbnail_path = os.path.splitext(output_video_path)[0] + ".thumbnail"
+                process = subprocess.Popen(
+                    [self.ffmpeg_bin_path, "-framerate", self.fps, "-i", os.path.join(self.images_path, "frame_%08d.png"), "-c:v", "libx264", "-pix_fmt", "yuv420p", output_video_path],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    universal_newlines=True,
+                )
+                stdout, stderr = process.communicate()
+                return_code = process.returncode
+                if return_code != 0:
+                    self.setStatus(_("ffmpeg export failed with return code {}: {}").format(return_code, stderr.strip()))
+                    self.setStatus(" ".join([self.ffmpeg_bin_path, "-framerate", self.fps, "-i", os.path.join(self.images_path, "frame_%08d.png"), "-c:v", "libx264", "-pix_fmt", "yuv420p", output_video_path]))
+                else:
+                    self.setStatus(_("ffmpeg export completed successfully. Video saved to {}").format(output_video_path))
+
+                # copy the first frame as thumbnail
+                first_frame_path = os.path.join(self.images_path, "frame_00000001.png")
+                if os.path.exists(first_frame_path):
+                    copyfile(first_frame_path, thumbnail_path)
+
+                if threading.current_thread() is threading.main_thread():
+                    self.parent.update_project_file_list([output_video_path])
+                else:
+                    GLib.idle_add(self.parent.update_project_file_list, [output_video_path])
+            except Exception as e:
+                self.setStatus(_("ffmpeg export failed: {}").format(str(e)))
+        threading.Thread(target=run).start()
 
     def call_ffmpeg_process(self):
         def run():
@@ -208,14 +290,37 @@ class FrameByFrameVideoVideoViewer(Gtk.Dialog):
                 return_code = process.returncode
                 if return_code != 0:
                     self.setStatus(_("ffmpeg processing failed with return code {}: {}").format(return_code, stderr.strip()))
-                else:
-                    self.setStatus(_("ffmpeg processing completed successfully."))
-                    self.calculate_total_frames()
-                    if threading.current_thread() is threading.main_thread():
-                        self.display_current_frame()
-                    else:
-                        GLib.idle_add(self.display_current_frame)
                     return
+                
+                # calculate the fps from the ffmpeg output
+                fps = None
+
+                for line in stderr.splitlines():
+                    if "Stream #" in line and "Video:" in line:
+                        # Look for fps patterns like "25 fps", "29.97 fps", "30000/1001 fps"
+                        if " fps" in line:
+                            parts = line.split()
+                            for i, part in enumerate(parts):
+                                if part.replace(",", "").strip() == "fps" and i > 0:
+                                    try:
+                                        fps_str = parts[i-1]
+                                        fps = fps_str.strip()
+                                    except ValueError:
+                                        continue
+                        if fps:
+                            break
+                    
+                if fps is None:
+                    self.setStatus(_("Could not determine fps from ffmpeg output."))
+                    return
+
+                self.fps = fps
+                self.setStatus(_("ffmpeg processing completed successfully at {} fps.").format(fps))
+                self.calculate_total_frames()
+                if threading.current_thread() is threading.main_thread():
+                    self.display_current_frame()
+                else:
+                    GLib.idle_add(self.display_current_frame)
             except Exception as e:
                 self.setStatus(_("ffmpeg processing failed: {}").format(str(e)))
 

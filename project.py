@@ -4,7 +4,7 @@ from gi.repository.GdkPixbuf import Pixbuf # type: ignore
 from gi.repository import Gio # type: ignore
 import threading
 from frame_by_frame import FrameByFrameVideoVideoViewer
-from shutil import copyfile
+from shutil import copyfile, rmtree
 
 import sys
 import subprocess
@@ -249,6 +249,12 @@ class ProjectDialog(Gtk.Dialog):
                                 menu_item_delete.connect("activate", on_delete_activate)
                                 menu.append(menu_item_delete)
 
+                                menu_item_delete_keep_children = Gtk.MenuItem(label=_("Delete Timeline and Keep Children"))
+                                def on_delete_keep_children_activate(menu_item):
+                                    self.delete_timeline(timeline_id, keep_children=True)
+                                menu_item_delete_keep_children.connect("activate", on_delete_keep_children_activate)
+                                menu.append(menu_item_delete_keep_children)
+
                                 menu.show_all()
                                 menu.popup_at_pointer(event)
                     return True
@@ -279,15 +285,16 @@ class ProjectDialog(Gtk.Dialog):
             add_children(row.iter)
 
         # delete any timelines that are no longer present
-        for timeline_id in list(existing_timelines.keys()):
-            found = False
-            for timeline in timeline_values:
-                if timeline.get("id", None) == timeline_id:
-                    found = True
-                    break
-            if not found:
-                self.timeline_tree_store.remove(existing_timelines[timeline_id])
-                del existing_timelines[timeline_id]
+        # NO you cannot do this because of GTK bugs with tree stores
+        # for timeline_id in list(existing_timelines.keys()):
+        #    found = False
+        #    for timeline in timeline_values:
+        #        if timeline.get("id", None) == timeline_id:
+        #            found = True
+        #            break
+        #    if not found:
+        #        self.timeline_tree_store.remove(existing_timelines[timeline_id])
+        #        del existing_timelines[timeline_id]
 
         nodes_skipped = -1
         past_nodes_skipped = None
@@ -330,11 +337,43 @@ class ProjectDialog(Gtk.Dialog):
             self.timeline_tree_widget.expand_to_path(path)
             self.timeline_tree_widget.get_selection().select_path(path)
 
+    def save_file_as(self, timeline_file_path):
+        dialog = Gtk.FileChooserDialog(
+            title=_("Save File As"),
+            parent=self,
+            action=Gtk.FileChooserAction.SAVE,
+        )
+        dialog.add_buttons(
+            Gtk.STOCK_CANCEL,
+            Gtk.ResponseType.CANCEL,
+            Gtk.STOCK_SAVE,
+            Gtk.ResponseType.OK,
+        )
+        dialog.set_default_size(600, 400)
+        dialog.set_current_name(os.path.basename(timeline_file_path))
+        dialog.set_keep_above(True)
+        dialog.set_modal(True)
+
+        response = dialog.run()
+        if response == Gtk.ResponseType.OK:
+            destination_path = dialog.get_filename()
+            try:
+                copyfile(timeline_file_path, destination_path)
+            except Exception as e:
+                error_dialog = Gtk.MessageDialog(
+                    parent=self,
+                    flags=0,
+                    message_type=Gtk.MessageType.ERROR,
+                    buttons=Gtk.ButtonsType.CLOSE,
+                    text=_("Error saving file: {}").format(str(e)),
+                )
+                error_dialog.set_keep_above(True)
+                error_dialog.set_modal(True)
+                error_dialog.run()
+                error_dialog.destroy()
+        dialog.destroy()
+
     def rebuild_timeline_files(self):
-        timeline_files_folder = os.path.join(self.project_current_timeline_folder, "files")
-        timeline_files = []
-        if os.path.exists(timeline_files_folder) and os.path.isdir(timeline_files_folder):
-            timeline_files = [f for f in os.listdir(timeline_files_folder) if os.path.isfile(os.path.join(timeline_files_folder, f)) and not f.endswith("_thumbnail.png")]
         # then we will create a Gtk FlowBox to show them with thumbnails if available
         if not hasattr(self, 'timeline_file_list_widget'):
             project_timeline_label = Gtk.Label(label=_("Timeline Files:"))
@@ -351,6 +390,23 @@ class ProjectDialog(Gtk.Dialog):
             self.timeline_file_list_widget.set_row_spacing(10)
 
             self.internal_box.pack_start(self.timeline_file_list_widget, True, True, 0)
+
+        # clean up existing children
+        for child in self.timeline_file_list_widget.get_children():
+            self.timeline_file_list_widget.remove(child)
+
+        if self.project_current_timeline_folder is None:
+            return
+        
+        timeline_files_folder = os.path.join(self.project_current_timeline_folder, "files")
+        timeline_files = []
+        if os.path.exists(timeline_files_folder) and os.path.isdir(timeline_files_folder):
+            timeline_files = [
+                f for f in os.listdir(timeline_files_folder)
+                if os.path.isfile(os.path.join(timeline_files_folder, f)) and
+                not f.endswith(".thumbnail") and
+                not f.startswith("_")
+            ]
 
         # clean up existing children
         for child in self.timeline_file_list_widget.get_children():
@@ -378,8 +434,8 @@ class ProjectDialog(Gtk.Dialog):
             if extension_with_dot in SUPPORTED_IMAGE_EXTENSIONS:
                 thumbnail_path = os.path.join(timeline_files_folder, timeline_file)
                 thumbnail = Pixbuf.new_from_file_at_scale(thumbnail_path, 100, 100, True)
-            elif os.path.exists(os.path.join(timeline_files_folder, os.path.splitext(timeline_file)[0] + "_thumbnail.png")):
-                thumbnail_path = os.path.join(timeline_files_folder, os.path.splitext(timeline_file)[0] + "_thumbnail.png")
+            elif os.path.exists(os.path.join(timeline_files_folder, os.path.splitext(timeline_file)[0] + ".thumbnail")):
+                thumbnail_path = os.path.join(timeline_files_folder, os.path.splitext(timeline_file)[0] + ".thumbnail")
                 thumbnail = Pixbuf.new_from_file_at_scale(thumbnail_path, 100, 100, True)
             elif extension_with_dot in EXTENSIONS_THUMBNAILS_CACHE:
                 thumbnail = EXTENSIONS_THUMBNAILS_CACHE[extension_with_dot]
@@ -429,6 +485,10 @@ class ProjectDialog(Gtk.Dialog):
                         menu_item_open = Gtk.MenuItem(label=_("Open File"))
                         menu_item_open.connect("activate", lambda item: open_file_with_default_app(timeline_file_path))
                         menu.append(menu_item_open)
+
+                        menu_item_save_as = Gtk.MenuItem(label=_("Save File As..."))
+                        menu_item_save_as.connect("activate", lambda item: self.save_file_as(timeline_file_path))
+                        menu.append(menu_item_save_as)
 
                         if extension_with_dot in SUPPORTED_GIMP_OPENABLE_IMAGE_EXTENSIONS:
                             # NOTE does not work due to GIMP not setting the overwrite path correctly
@@ -506,25 +566,66 @@ class ProjectDialog(Gtk.Dialog):
                 self.update_project_file(self.project_file_contents)
         dialog.destroy()
 
-    def actually_delete_timeline(self, timeline_id):
+    def actually_delete_timeline(self, timeline_id, keep_children=False, is_root_call=True):
         deleted_current_timeline = timeline_id == self.project_file_contents.get("current_timeline", None)
-        self.project_file_contents.get("timelines", {}).pop(timeline_id, None)
+        own_timeline_object = self.project_file_contents.get("timelines", {}).pop(timeline_id, None)
 
-        for existing_timeline_element in self.project_file_contents.get("timelines", {}).values():
-            if existing_timeline_element.get("parent_id", None) == timeline_id:
-                that_deleted_current_timeline = self.actually_delete_timeline(existing_timeline_element.get("id", None))
-                if that_deleted_current_timeline:
-                    deleted_current_timeline = True
+        if not keep_children:
+            for existing_timeline_element in self.project_file_contents.get("timelines", {}).copy().values():
+                if existing_timeline_element.get("parent_id", None) == timeline_id:
+                    that_deleted_current_timeline = self.actually_delete_timeline(existing_timeline_element.get("id", None), keep_children=keep_children, is_root_call=False)
+                    if that_deleted_current_timeline:
+                        deleted_current_timeline = True
+
+            if is_root_call and deleted_current_timeline:
+                new_current_timeline = own_timeline_object.get("parent_id", None)
+                self.project_file_contents["current_timeline"] = new_current_timeline
+        else:
+            own_parent_id = own_timeline_object.get("parent_id", None)
+            new_current_timeline = None
+            # need to reparent children to the deleted timeline's parent
+            for existing_timeline_element_key, existing_timeline_element in self.project_file_contents.get("timelines", {}).items():
+                if existing_timeline_element.get("parent_id", None) == timeline_id:
+                    if not new_current_timeline:
+                        new_current_timeline = existing_timeline_element.get("id", None)
+                    self.project_file_contents["timelines"] = self.project_file_contents["timelines"].copy()
+                    self.project_file_contents["timelines"][existing_timeline_element_key] = self.project_file_contents["timelines"][existing_timeline_element_key].copy()
+                    self.project_file_contents["timelines"][existing_timeline_element_key]["parent_id"] = own_parent_id
+                    if own_parent_id is None:
+                        self.project_file_contents["timelines"][existing_timeline_element_key]["initial"] = True
+
+            if new_current_timeline is not None:
+                self.project_file_contents["current_timeline"] = new_current_timeline
+
+        if self.project_file_contents["current_timeline"] is None:
+            # set to any existing initial timeline if available
+            for existing_timeline_element in self.project_file_contents.get("timelines", {}).values():
+                if existing_timeline_element.get("initial", False):
+                    self.project_file_contents["current_timeline"] = existing_timeline_element.get("id", None)
+                    break
+
+        GTK_BUG_WORKAROUND = self.project_file_contents # workaround for GTK messing up with the data in the project file contents
 
         # delete from the tree store
-        for row in self.timeline_tree_store:
-            if row[1] == timeline_id:
-                self.timeline_tree_store.remove(row.iter)
-                break
+        if keep_children:
+            # still delete the children due to bugs in GTK we need to rebuild the entire timeline tree UI
+            # delete everything in timeline_tree_store and rebuild from scratch
+            self.timeline_tree_store.clear()
+        else:
+            # we need to delete all children from the tree store as well
+            # we delete everything because GTK is a bit buggy with tree stores
+            self.timeline_tree_store.clear()
+
+        # delete the timeline directory and all its contents
+        timeline_folder = os.path.join(self.project_folder, "timelines", timeline_id)
+        if os.path.exists(timeline_folder) and os.path.isdir(timeline_folder):
+            rmtree(timeline_folder)
+
+        self.project_file_contents = GTK_BUG_WORKAROUND
 
         return deleted_current_timeline
 
-    def delete_timeline(self, timeline_id):
+    def delete_timeline(self, timeline_id, keep_children=False):
         timeline_in_question = self.project_file_contents.get("timelines", {}).get(timeline_id, None)
         if timeline_in_question is None:
             return
@@ -535,28 +636,14 @@ class ProjectDialog(Gtk.Dialog):
         response = dialog.run()
         dialog.destroy()
         if response == Gtk.ResponseType.YES:
-            timeline_to_be_current = self.project_file_contents.get("current_timeline", None)
-            deleted_current = self.actually_delete_timeline(timeline_id)
-
-            if deleted_current:
-                # pick the first initial timeline available
-                first_timeline_id = None
-                for t in self.project_file_contents.get("timelines", {}).values():
-                    if t.get("initial", False):
-                        first_timeline_id = t.get("id", None)
-                    break
-
-                if first_timeline_id is not None:
-                    timeline_to_be_current = first_timeline_id
-                else:
-                    timeline_to_be_current = None
-
             # make a shallow copy of the project file contents and update the current timeline
             # that is because this is a dict and we want to avoid mutating the original one
             # that is a reference to the one in the tools.py
             self.project_file_contents = self.project_file_contents.copy()
-            self.project_file_contents["current_timeline"] = timeline_to_be_current
+
+            self.actually_delete_timeline(timeline_id, keep_children=keep_children)
             self.update_project_file(self.project_file_contents)
+            self.rebuild_timeline_ui()
         
     def on_close(self, callback):
         self.connect("response", lambda dialog, response: callback() or self.destroy() or self.cleanup())
@@ -629,7 +716,7 @@ class ProjectDialog(Gtk.Dialog):
         
         try:
             os.remove(timeline_file)
-            thumbnail_path = os.path.splitext(timeline_file)[0] + "_thumbnail.png"
+            thumbnail_path = os.path.splitext(timeline_file)[0] + ".thumbnail"
             if os.path.exists(thumbnail_path):
                 os.remove(thumbnail_path)
             
@@ -991,7 +1078,7 @@ class ProjectDialog(Gtk.Dialog):
             existing_viewer = self.open_viewers[video_file_path]
             existing_viewer.present()
             return
-        viewer = FrameByFrameVideoVideoViewer(video_file_path, parent=self)
+        viewer = FrameByFrameVideoVideoViewer(video_file_path, parent=self, project_files_path=self.custom_project_file_folder)
         viewer.show_all()
         viewer.present()
         viewer.on_close(lambda: self.close_frame_by_frame_viewer(video_file_path, viewer))
@@ -1010,9 +1097,9 @@ class ProjectDialog(Gtk.Dialog):
                 dest_path = os.path.join(self.custom_project_file_folder, f"{os.path.splitext(file_name)[0]}_{n}{os.path.splitext(file_name)[1]}")
                 n += 1
             copyfile(timeline_file, dest_path)
-            thumbnail_path = os.path.splitext(timeline_file)[0] + "_thumbnail.png"
+            thumbnail_path = os.path.splitext(timeline_file)[0] + ".thumbnail"
             if os.path.exists(thumbnail_path):
-                copyfile(thumbnail_path, os.path.splitext(dest_path)[0] + "_thumbnail.png")
+                copyfile(thumbnail_path, os.path.splitext(dest_path)[0] + ".thumbnail")
             self.update_project_file_list([dest_path])
         except Exception as e:
             error_dialog = Gtk.MessageDialog(parent=self, flags=0, message_type=Gtk.MessageType.ERROR,
@@ -1062,7 +1149,11 @@ class ProjectDialog(Gtk.Dialog):
 
     def update_project_file_list(self, update_specifically=None):
         # first we are going to list all project files in the custom project file folder
-        project_files_in_folder = [f for f in os.listdir(self.custom_project_file_folder) if os.path.isfile(os.path.join(self.custom_project_file_folder, f)) and not f.endswith("_thumbnail.png")]
+        project_files_in_folder = [
+            f for f in os.listdir(self.custom_project_file_folder)
+            if os.path.isfile(os.path.join(self.custom_project_file_folder, f)) and
+            not f.endswith(".thumbnail")
+        ]
         project_files = project_files_in_folder if update_specifically is None else [os.path.basename(f) for f in update_specifically]
         # then we will create a Gtk FlowBox to show them with thumbnails if available
         if not hasattr(self, 'project_files_list_widget'):
@@ -1099,7 +1190,7 @@ class ProjectDialog(Gtk.Dialog):
                 True
             )
         for project_file in project_files:
-            thumbnail_path = os.path.splitext(os.path.join(self.custom_project_file_folder, project_file))[0] + "_thumbnail.png"
+            thumbnail_path = os.path.splitext(os.path.join(self.custom_project_file_folder, project_file))[0] + ".thumbnail"
             thumbnail = UNKNOWN_THUMBNAIL
             extension_with_dot = os.path.splitext(project_file)[1].lower()
             if extension_with_dot in SUPPORTED_IMAGE_EXTENSIONS:
@@ -1109,7 +1200,7 @@ class ProjectDialog(Gtk.Dialog):
             elif extension_with_dot in EXTENSIONS_THUMBNAILS_CACHE:
                 thumbnail = EXTENSIONS_THUMBNAILS_CACHE[extension_with_dot]
             elif extension_with_dot in EXTENSIONS_THUMBNAILS:
-                thumbnail = Pixbuf.new_from_file_at_scale(EXTENSIONS_THUMBNAILS[extension_with_dot], 100, 100, True)
+                thumbnail = Pixbuf.new_from_file_at_scale(os.path.join(os.path.dirname(os.path.abspath(__file__)), "icons", EXTENSIONS_THUMBNAILS[extension_with_dot]), 100, 100, True)
                 EXTENSIONS_THUMBNAILS_CACHE[extension_with_dot] = thumbnail
                 
             # first let's see if we already have this file in the list box
@@ -1234,7 +1325,7 @@ class ProjectDialog(Gtk.Dialog):
         thumbnail_pixbuf = image.get_thumbnail(200, 200, Gimp.PixbufTransparency.KEEP_ALPHA)
         if thumbnail_pixbuf is None:
             return False
-        thumbnail_file_path = os.path.splitext(xcf_file_path)[0] + "_thumbnail.png"
+        thumbnail_file_path = os.path.splitext(xcf_file_path)[0] + ".thumbnail"
         success, bytes = thumbnail_pixbuf.save_to_bufferv("png", [], [])
 
         if not success:

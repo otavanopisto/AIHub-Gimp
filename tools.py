@@ -1468,7 +1468,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 
 				if not running and not error:
 					process_last_collected_files(self.selected_image, self.project_is_real, self.half_size, self.half_size_coords)
-				elif not running and error and self.project_is_real:
+				elif not running and error and self.project_is_real and not self.protected_run_mode:
 					self.rollback_timeline_to_last_valid_state()
 
 				if hasattr(self, "project_dialog") and self.project_dialog is not None and self.project_is_real and not running:
@@ -2292,6 +2292,9 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 			
 		def rollback_timeline_to_last_valid_state(self):
 			if self.errored:
+				return
+
+			if self.protected_run_mode:
 				return
 
 			if not self.project_is_real or self.project_file_contents is None:

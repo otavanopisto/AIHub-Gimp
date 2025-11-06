@@ -35,7 +35,7 @@ FFMPEG_SOURCES = {
 }
 
 class FrameByFrameVideoVideoViewer(Gtk.Dialog):
-    def __init__(self, file_path, parent, project_files_path):
+    def __init__(self, file_path, parent, project_files_path, project_type, tools_object):
         title = os.path.basename(file_path)
         super().__init__(title=title, transient_for=parent, flags=0)
 
@@ -46,6 +46,11 @@ class FrameByFrameVideoVideoViewer(Gtk.Dialog):
         self.set_deletable(True)
         self.set_position(Gtk.WindowPosition.CENTER)
         self.parent = parent
+
+        self.project_type = project_type
+        self.tools_object = tools_object
+
+        self.calculate_workflows_with_frame_input()
 
         self.project_files_path = project_files_path
 
@@ -206,8 +211,47 @@ class FrameByFrameVideoVideoViewer(Gtk.Dialog):
                 replace_item.connect("activate", lambda x: self.replace_from_gimp_frame())
                 menu.append(replace_item)
 
-                # TODO add custom workflows here that fit frame by frame criteria
+                # add a divider
+                separator = Gtk.SeparatorMenuItem()
+                menu.append(separator)
 
+                for workflow_object in self.workflows_with_frame_input:
+                    workflow = workflow_object["workflow"]
+                    workflow_name = workflow.get("label", "Unnamed Workflow")
+                    item = Gtk.MenuItem(label=_("Apply Workflow: {}").format(workflow_name))
+                    def on_workflow_activate(x, workflow=workflow):
+                        expose_values = {}
+                        for expose_id, widget in workflow.get("expose", {}).items():
+                            if widget.get("type") == "AIHubExposeFrame":
+                                offset = widget.get("data", {}).get("frame_index", 0)
+                                if widget.get("data", {}).get("frame_index_type") == "relative_to_current":
+                                    frame_to_use = self.current_frame + offset
+                                else:
+                                    frame_to_use = offset
+                                if frame_to_use < 0 or frame_to_use >= self.total_frames:
+                                    self.setStatus(_("Cannot apply workflow {}, frame {} is out of bounds.").format(workflow_name, frame_to_use))
+                                    return
+                                frame_path = os.path.join(self.images_path, f"frame_{(frame_to_use + 1):08d}.png")
+                                expose_values[expose_id] = {"path": frame_path, "frame": frame_to_use, "total_frames": self.total_frames}
+                        self.tools_object.select_workflow_for_frames(workflow, expose_values, self.on_frames_callback)
+                    item.connect("activate", on_workflow_activate)
+                    menu.append(item)
+
+                    # need to check whether the item should be enabled or disabled
+                    min_offset = workflow_object["min_offset"]
+                    max_offset = workflow_object["max_offset"]
+                    specific_frames = workflow_object["specific_frames"]
+                    can_apply = True
+                    if self.current_frame + min_offset < 0:
+                        can_apply = False
+                    if self.current_frame + max_offset >= self.total_frames:
+                        can_apply = False
+                    for specific_frame in specific_frames:
+                        if specific_frame < 0 or specific_frame >= self.total_frames:
+                            can_apply = False
+                    if not can_apply:
+                        item.set_sensitive(False)
+                    
                 menu.show_all()
                 menu.popup_at_pointer(event)
                 return True  # Stop further handling
@@ -222,9 +266,92 @@ class FrameByFrameVideoVideoViewer(Gtk.Dialog):
         else:
             self.setStatus(_("Frame {} not found").format(current_frame_path))
 
+    def on_frames_callback(self, paths, last_use_as_frames_action):
+        print(paths, last_use_as_frames_action)
+        if last_use_as_frames_action["insert_action"] == "REPLACE":
+            # easiest to do we will be replacing the frames given at the given index with the new frames given
+            start_index = int(last_use_as_frames_action.get("insert_index", 0))
+            for i, path in enumerate(paths):
+                frame_index = start_index + i
+                dest_path = os.path.join(self.images_path, f"frame_{(frame_index + 1):08d}.png")
+                copyfile(path, dest_path)
+            # nothing changes we must just refresh the current frame
+            self.display_current_frame()
+        else:
+            # more difficult we need to insert the frames at the given index and shift the rest forward
+            insert_index = int(last_use_as_frames_action.get("insert_index", 0))
+            num_new_frames = len(paths)
+            # shift existing frames forward
+            for frame_num in range(self.total_frames - 1, insert_index - 1, -1):
+                old_path = os.path.join(self.images_path, f"frame_{(frame_num + 1):08d}.png")
+                new_path = os.path.join(self.images_path, f"frame_{(frame_num + 1 + num_new_frames):08d}.png")
+                if os.path.exists(old_path):
+                    os.rename(old_path, new_path)
+            # now copy the new frames in
+            for i, path in enumerate(paths):
+                dest_path = os.path.join(self.images_path, f"frame_{(insert_index + i + 1):08d}.png")
+                copyfile(path, dest_path)
+            # update total frames
+            self.total_frames += num_new_frames
+            self.current_frame += num_new_frames
+            # refresh the current frame
+            self.display_current_frame()
+        return True
+
     def replace_from_gimp_frame(self):
-        #TODO implement getting the current image from GIMP
-        return
+        # get the current width and height of the current frame
+        image_pixbuf = self.image.get_pixbuf()
+        width = image_pixbuf.get_width()
+        height = image_pixbuf.get_height()
+
+        # now we need to get all the images in gimp that match this size
+        valid_images = []
+        for img in Gimp.get_images():
+            if img.get_width() == width and img.get_height() == height:
+                valid_images.append(img)
+        if len(valid_images) == 0:
+            self.setStatus(_("No open images in Gimp match the size of the current frame ({}x{}).").format(width, height))
+            return
+        
+        # now we will make a dialog to select which image to use
+        dialog = Gtk.Dialog(title=_("Select Image to Replace Frame"), transient_for=self, flags=0)
+        dialog.set_default_size(400, 300)
+        dialog.set_border_width(10)
+        dialog.set_modal(True)
+        dialog.set_keep_above(True)
+        content_area = dialog.get_content_area()
+        listbox = Gtk.ListBox()
+        listbox.set_selection_mode(Gtk.SelectionMode.SINGLE)
+        for img in valid_images:
+            row = Gtk.ListBoxRow()
+            hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+            label = Gtk.Label(label=img.get_name(), xalign=0)
+            height_from_ratio = int((200 / img.get_width()) * img.get_height())
+            image_pixbuf = img.get_thumbnail(200,height_from_ratio,Gimp.PixbufTransparency.KEEP_ALPHA)
+            image = Gtk.Image.new_from_pixbuf(image_pixbuf)
+            hbox.pack_start(image, False, False, 0)
+            hbox.pack_start(label, True, True, 0)
+            row.add(hbox)
+            listbox.add(row)
+        content_area.pack_start(listbox, True, True, 0)
+        dialog.add_button(_("Cancel"), Gtk.ResponseType.CANCEL)
+        dialog.add_button(_("Replace Frame"), Gtk.ResponseType.OK)
+        dialog.show_all()
+        response = dialog.run()
+        if response == Gtk.ResponseType.OK:
+            selected_row = listbox.get_selected_row()
+            if selected_row is not None:
+                index = selected_row.get_index()
+                selected_image = valid_images[index]
+                dest_path = os.path.join(self.images_path, f"frame_{(self.current_frame + 1):08d}.png")
+
+                # create a new gfile to save the image
+                gfile = Gio.File.new_for_path(dest_path)
+                Gimp.file_save(Gimp.RunMode.NONINTERACTIVE, selected_image, gfile, None)
+
+                self.display_current_frame()
+        dialog.destroy()
+
 
     def export_video(self):
         # call ffmpeg to export the frames as a video
@@ -424,3 +551,29 @@ class FrameByFrameVideoVideoViewer(Gtk.Dialog):
 
     def on_close(self, callback):
         self.connect("response", lambda dialog, response: callback() or self.destroy() or self.cleanup_tmp())
+
+    def calculate_workflows_with_frame_input(self):
+        workflows = self.tools_object.get_workflows()
+        self.workflows_with_frame_input = []
+        for workflow in workflows.values():
+            compatible_project_type = workflow.get("project_type", "") == self.project_type or workflow.get("project_type", "") == ""
+            if not compatible_project_type:
+                continue
+            exposes = workflow.get("expose", {})
+            min_offset = 0
+            max_offset = 0
+            specific_frames = []
+            contains_frames = False
+            for expose_id, widget in exposes.items():
+                if widget.get("type") == "AIHubExposeFrame":
+                    contains_frames = True
+                    offset = widget.get("data", {}).get("frame_index", 0)
+                    if widget.get("data", {}).get("frame_index_type") == "relative_to_current":
+                        if offset < min_offset:
+                            min_offset = offset
+                        if offset > max_offset:
+                            max_offset = offset
+                    else:
+                        specific_frames.append(offset)
+            if contains_frames:
+                self.workflows_with_frame_input.append({"workflow": workflow, "name": workflow.get("name", "Unnamed Workflow"), "min_offset": min_offset, "max_offset": max_offset, "specific_frames": specific_frames})

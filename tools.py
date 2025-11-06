@@ -11,7 +11,7 @@ from gi.repository.GdkPixbuf import Pixbuf # type: ignore
 from gi.repository.GdkPixbuf import InterpType # type: ignore
 from gi.repository import Gio # type: ignore
 import threading
-from gtkexposes import EXPOSES
+from gtkexposes import EXPOSES, AIHubExposeFrame
 import uuid
 from project import ProjectDialog
 import ssl
@@ -233,9 +233,13 @@ def remove_batch_files(filename, timeline_path, project_is_real):
 					print("Error removing batch file:", e)
 
 last_collected_files = []
+last_use_as_frames_action = None
+provide_feedback_to_frame_by_frame_next_frames_callback = None
 
 def process_last_collected_files(current_image, project_is_real, half_size=False, half_size_coords=False):
 	global last_collected_files
+	global last_use_as_frames_action
+	global provide_feedback_to_frame_by_frame_next_frames_callback
 	open_with_default_app_afterwards = []
 	for collected in last_collected_files:
 		should_delete_file_afterwards = False
@@ -255,6 +259,17 @@ def process_last_collected_files(current_image, project_is_real, half_size=False
 							shutil.copy(path, user_folder)
 						except Exception as e:
 							print("Error copying file to user location:", e)
+			if provide_feedback_to_frame_by_frame_next_frames_callback and last_use_as_frames_action:
+				fn = provide_feedback_to_frame_by_frame_next_frames_callback
+				should_delete = fn(collected["paths"], last_use_as_frames_action)
+
+				if should_delete:
+					for path in collected["paths"]:
+						if os.path.exists(path):
+							try:
+								os.remove(path)
+							except Exception as e:
+								print("Error removing temporary file:", e)
 		else:
 			finalpath = collected["path"]
 			# new image with autoopen option, or new layer to empty image in non-real project which would otherwise mean the user loses the image
@@ -350,6 +365,8 @@ def process_last_collected_files(current_image, project_is_real, half_size=False
 		open_file_with_default_app(path)
 	
 	last_collected_files = []
+	provide_feedback_to_frame_by_frame_next_frames_callback = None
+	last_use_as_frames_action = None
 
 def handle_project_file(
 	timeline_path,
@@ -596,6 +613,9 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 
 							with open(timeline_config_path, "w") as f:
 								json.dump(current_config, f, indent=4)
+					elif message_parsed["type"] == "USE_AS_FRAMES":
+						global last_use_as_frames_action
+						last_use_as_frames_action = message_parsed
 					else:
 						if self.is_running:
 							self.mark_as_running(False, _("Status: Unknown message type received: {}").format(message_parsed['type']))
@@ -1006,6 +1026,8 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 				element.on_model_changed(model_info)
 
 		def on_workflow_selected(self, combo):
+			global provide_feedback_to_frame_by_frame_next_frames_callback
+			provide_feedback_to_frame_by_frame_next_frames_callback = None
 			try:
 				selected_context = self.context_selector.get_active_id()
 				selected_workflow = combo.get_active_id()
@@ -2422,6 +2444,21 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 			dialog.set_keep_above(True)
 			dialog.run()
 			dialog.destroy()
+
+		def get_workflows(self):
+			return self.workflows
+		
+		def select_workflow_for_frames(self, workflow, expose_values, fn):
+			self.on_special_workflow_selected(workflow)
+
+			for element in self.workflow_elements_all:
+				# check that the class is AIHubExposeFrame
+				if isinstance(element, AIHubExposeFrame):
+					value_for_expose = expose_values[element.get_id()]
+					element.force_select(value_for_expose["path"], value_for_expose["frame"], value_for_expose["total_frames"])
+
+			global provide_feedback_to_frame_by_frame_next_frames_callback
+			provide_feedback_to_frame_by_frame_next_frames_callback = fn
 
 	ImageDialog().run()
 

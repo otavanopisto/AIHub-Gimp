@@ -204,6 +204,9 @@ class AIHubExposeBase:
 	def get_special_priority(self):
 		return 0
 	
+	def get_data(self):
+		return self.data
+	
 	def destroy(self):
 		pass
 	
@@ -1052,8 +1055,8 @@ class AIHubExposeImage(AIHubExposeBase):
 			del dictValue["layer_id"]
 			del dictValue["pos_x"]
 			del dictValue["pos_y"]
-			dictValue["frame"] = self.frame_widget.get_value()
-			dictValue["total_frames"] = self.total_frames_widget.get_value()
+			dictValue["frame"] = self.frame_widget.get_value_as_int()
+			dictValue["total_frames"] = self.total_frames_widget.get_value_as_int()
 		return dictValue
 	
 	def get_value(self, half_size=False, half_size_coords=False):
@@ -1147,6 +1150,16 @@ class AIHubExposeImage(AIHubExposeBase):
 			return self.selected_filename is not None or self.select_combo.get_active() != -1
 		else:
 			return self.selected_image is not None
+		
+	def force_select(self, path_value, frame_value=None, total_frames_value=None):
+		# set the uploaded_file_path to the given path_value
+		if (not self.is_using_internal_file()):
+			self.selected_filename = path_value
+			self.select_button.set_label(os.path.basename(self.selected_filename) + " (" + _("Click to clear") + ")")
+			if self.is_frame and frame_value is not None and total_frames_value is not None:
+				self.frame_widget.set_value(frame_value)
+				self.total_frames_widget.set_value(total_frames_value)
+			self.on_file_selected()
 
 class AIHubExposeImageInfoOnly(AIHubExposeImage):
 	def __init__(self, id, data, workflow_context, workflow_id, workflow, project_current_timeline_path, project_saved_path, apinfo):

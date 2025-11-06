@@ -126,10 +126,13 @@ class ProjectDialog(Gtk.Dialog):
         self.update_project_timeline = None
         self.update_project_file = None
         self.image_model = image_model
+        self.project_type = project_file_contents.get("project_type", "")
 
         self.images_opened = []
 
         self.custom_project_file_folder = os.path.join(self.project_folder, "project_files")
+
+        self.tools_object = parent
 
         if not os.path.exists(self.custom_project_file_folder):
             os.makedirs(self.custom_project_file_folder)
@@ -1078,7 +1081,7 @@ class ProjectDialog(Gtk.Dialog):
             existing_viewer = self.open_viewers[video_file_path]
             existing_viewer.present()
             return
-        viewer = FrameByFrameVideoVideoViewer(video_file_path, parent=self, project_files_path=self.custom_project_file_folder)
+        viewer = FrameByFrameVideoVideoViewer(video_file_path, parent=self, project_files_path=self.custom_project_file_folder, project_type=self.project_type, tools_object=self.tools_object)
         viewer.show_all()
         viewer.present()
         viewer.on_close(lambda: self.close_frame_by_frame_viewer(video_file_path, viewer))

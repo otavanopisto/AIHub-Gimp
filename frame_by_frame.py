@@ -267,7 +267,6 @@ class FrameByFrameVideoVideoViewer(Gtk.Dialog):
             self.setStatus(_("Frame {} not found").format(current_frame_path))
 
     def on_frames_callback(self, paths, last_use_as_frames_action):
-        print(paths, last_use_as_frames_action)
         if last_use_as_frames_action["insert_action"] == "REPLACE":
             # easiest to do we will be replacing the frames given at the given index with the new frames given
             start_index = int(last_use_as_frames_action.get("insert_index", 0))

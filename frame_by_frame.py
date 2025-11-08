@@ -404,6 +404,10 @@ class FrameByFrameVideoVideoViewer(Gtk.Dialog):
                 # make the images path if it doesn't exist
                 if not os.path.exists(self.images_path):
                     os.makedirs(self.images_path, exist_ok=True)
+                else:
+                    # clean the directory
+                    for f in os.listdir(self.images_path):
+                        os.remove(os.path.join(self.images_path, f))
 
                 # now we will call ffmpeg to extract frames as png files
                 process = subprocess.Popen(

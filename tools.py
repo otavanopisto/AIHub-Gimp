@@ -402,7 +402,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 		return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
 
 	class ImageDialog(GimpUi.Dialog):
-		def setStatus(self, v: str):
+		def setStatus(self, v: str, error: bool = False):
 			def do_set():
 				buffer = self.message_label.get_buffer()
 				buffer.set_text(v)
@@ -412,6 +412,11 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 				do_set()
 			else:
 				GLib.idle_add(do_set)
+
+			if error:
+				# display the traceback of the error
+				import traceback
+				traceback.print_exc()
 
 		def setErrored(self):
 			if threading.current_thread() is threading.main_thread():
@@ -470,9 +475,9 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 						return
 					except Exception as e:
 						if self.is_running:
-							self.mark_as_running(False, _("Error: Failed to write received file from server {}").format(str(e)))
+							self.mark_as_running(False, _("Error: Failed to write received file from server {}").format(str(e)), error=True)
 						else:
-							self.setStatus(_("Error: Failed to write received file from server {}").format(str(e)))
+							self.setStatus(_("Error: Failed to write received file from server {}").format(str(e)), error=True)
 						MESSAGE_LOCK.release()
 						return
 				elif isinstance(msg, bytes):
@@ -481,9 +486,9 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 					return
 			except Exception as e:
 				if self.is_running:
-					self.mark_as_running(False, _("Error: Failed to process received file from server {}").format(str(e)))
+					self.mark_as_running(False, _("Error: Failed to process received file from server {}").format(str(e)), error=True)
 				else:
-					self.setStatus(_("Error: Failed to process received file from server {}").format(str(e)))
+					self.setStatus(_("Error: Failed to process received file from server {}").format(str(e)), error=True)
 				MESSAGE_LOCK.release()
 				return
 
@@ -543,9 +548,9 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 								)
 							except Exception as e:
 								if self.is_running:
-									self.mark_as_running(False, _("Error: Failed to write received file from server {}").format(str(e)))
+									self.mark_as_running(False, _("Error: Failed to write received file from server {}").format(str(e)), error=True)
 								else:
-									self.setStatus(_("Error: Failed to write received file from server {}").format(str(e)))
+									self.setStatus(_("Error: Failed to write received file from server {}").format(str(e)), error=True)
 								MESSAGE_LOCK.release()
 								return
 						else:
@@ -907,7 +912,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 
 				#self.on_category_selected(self.category_selector)
 			except Exception as e:
-				self.setStatus(_("Error: {}").format(str(e)))
+				self.setStatus(_("Error: {}").format(str(e)), error=True)
 				self.setErrored()
 
 		def on_category_selected(self, combo):
@@ -1013,7 +1018,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 
 			#self.on_workflow_selected(self.workflow_selector)
 			except Exception as e:
-				self.setStatus(_("Error: {}").format(str(e)))
+				self.setStatus(_("Error: {}").format(str(e)), error=True)
 				self.setErrored()
 
 		def on_model_changed(self, new_model_value):
@@ -1255,7 +1260,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 
 				self.on_dialog_focus(None, None)
 			except Exception as e:
-				self.setStatus(_("Error: {}").format(str(e)))
+				self.setStatus(_("Error: {}").format(str(e)), error=True)
 				self.setErrored()
 
 		def on_toggle_advanced_options(self, button, advanced_options_box):
@@ -1413,9 +1418,9 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 					if (status is False or type(status) is str):
 						self.mark_as_running(False)
 						if type(status) is str:
-							self.setStatus(_("Error: Failed to upload binary data due to: {}").format(status))
+							self.setStatus(_("Error: Failed to upload binary data due to: {}").format(status), error=True)
 						else:
-							self.setStatus(_("Error: Failed to upload binary data"))
+							self.setStatus(_("Error: Failed to upload binary data"), error=True)
 						return
 					values[element.id] = element.get_value(half_size=self.half_size, half_size_coords=self.half_size_coords)
 
@@ -1427,7 +1432,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 
 				self.websocket.send(json.dumps(workflow_operation))
 			except Exception as e:
-				self.setStatus(_("Error: {}").format(str(e)))
+				self.setStatus(_("Error: {}").format(str(e)), error=True)
 				self.setErrored()
 				return
 
@@ -1456,7 +1461,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 			try:
 				self.websocket.send(json.dumps(cancel_operation))
 			except Exception as e:
-				self.setStatus(_("Error: {}").format(str(e)))
+				self.setStatus(_("Error: {}").format(str(e)), error=True)
 				self.setErrored()
 				return
 		
@@ -1479,7 +1484,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 						element.get_widget().set_sensitive(not running)
 
 				messageToShow = messageOverride if messageOverride is not None else (_("Status: Running workflow...") if running else _("Status: Ready"))
-				self.setStatus(messageToShow)
+				self.setStatus(messageToShow, error=error)
 				if not running:
 					# the reason we force this focus is because the dialog remains static while it is running
 					# and it may had been focused during that phase, so we force it to refocus once it is done
@@ -1507,14 +1512,14 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 
 		def on_close(self, ws, close_status_code, close_msg):
 			if not self.connected:
-				self.setStatus(_("Error: Could not connect to server {}:{}").format(self.apihost, self.apiport))
+				self.setStatus(_("Error: Could not connect to server {}:{}").format(self.apihost, self.apiport), error=True)
 				self.setErrored()
 				return
-			self.setStatus(_("Error: Disconnected from server"))
+			self.setStatus(_("Error: Disconnected from server"), error=True)
 			self.setErrored()
 
 		def on_error(self, ws, error):
-			self.setStatus(_("Error: {}").format(str(error)))
+			self.setStatus(_("Error: {}").format(str(error)), error=True)
 			self.setErrored()
 
 		def start_websocket(self):
@@ -1811,7 +1816,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 
 				threading.Thread(target=self.start_websocket, daemon=True).start()
 			except Exception as e:
-				self.setStatus(_("Error: {}").format(str(e)))
+				self.setStatus(_("Error: {}").format(str(e)), error=True)
 				self.setErrored()
 
 		def on_new_1k_layer(self, menu_item):
@@ -2146,7 +2151,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 				return
 			
 			if not self.project_is_real or self.project_file_contents is None:
-				self.setStatus(_("Error: No project is currently opened"))
+				self.setStatus(_("Error: No project is currently opened"), error=True)
 				return
 			
 			if self.project_file_contents.get("current_timeline", "") == new_timeline_id:
@@ -2181,7 +2186,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 				return
 			
 			if not self.project_is_real or self.project_file_contents is None:
-				self.setStatus(_("Error: No project is currently opened"))
+				self.setStatus(_("Error: No project is currently opened"), error=True)
 				return
 			
 			new_current_timeline = new_project_file_contents["current_timeline"]
@@ -2274,7 +2279,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 					with open(self.project_file, "w") as f:
 						json.dump(self.project_file_contents, f, indent=4)
 				except Exception as e:
-					self.setStatus(_("Error: Failed to update project file: {}").format(str(e)))
+					self.setStatus(_("Error: Failed to update project file: {}").format(str(e)), error=True)
 					self.setErrored()
 					return
 
@@ -2293,7 +2298,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 							if os.path.isdir(previous_timeline_folder):
 								shutil.copytree(previous_timeline_folder, self.project_current_timeline_folder, dirs_exist_ok=True)
 						except Exception as e:
-							self.setStatus(_("Error: Failed to copy timeline data: {}").format(str(e)))
+							self.setStatus(_("Error: Failed to copy timeline data: {}").format(str(e)), error=True)
 							self.setErrored()
 							return
 				
@@ -2308,7 +2313,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 				if self.is_running:
 					self.started_new_timeline_from_init_last_run = current_timeline_info.get("initial", False)
 			else:
-				self.setStatus(_("Error: No project is currently opened"))
+				self.setStatus(_("Error: No project is currently opened"), error=True)
 				self.setErrored()
 				return
 			
@@ -2320,12 +2325,12 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 				return
 
 			if not self.project_is_real or self.project_file_contents is None:
-				self.setStatus(_("Error: No project is currently opened"))
+				self.setStatus(_("Error: No project is currently opened"), error=True)
 				return
 
 			current_timeline_id = self.project_file_contents.get("current_timeline", None)
 			if current_timeline_id is None:
-				self.setStatus(_("Error: No timeline is currently selected"))
+				self.setStatus(_("Error: No timeline is currently selected"), error=True)
 				return
 
 			current_timeline_info = self.project_file_contents.get("timelines", {}).get(current_timeline_id, {})
@@ -2341,7 +2346,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 				if os.path.isdir(current_timeline_folder):
 					shutil.rmtree(current_timeline_folder)
 			except Exception as e:
-				self.setStatus(_("Error: Failed to delete timeline data: {}").format(str(e)))
+				self.setStatus(_("Error: Failed to delete timeline data: {}").format(str(e)), error=True)
 			
 			self.project_file_contents["current_timeline"] = timeline_to_rollback_to
 			self.on_change_project_file(self.project_file_contents)

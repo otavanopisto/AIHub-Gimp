@@ -825,6 +825,7 @@ class AIHubExposeImage(AIHubExposeBase):
 				self.select_button.set_label(_("Select an image from a file"))
 			self.select_combo.show()
 			self.select_from_layer_button.show()
+			self.image_preview.clear()
 			self.on_file_selected()
 			return
 		
@@ -2556,10 +2557,10 @@ class AIHubExposeLora(AIHubExposeBase):
 		# now to the right side we want a vertical box with the name, description and slider
 		right_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
 		self.box.pack_start(right_box, True, True, 0)
-		self.name_label = AIHubLabel(lora_data["name"], b"font-weight: bold;")
+		self.name_label = AIHubLabel(lora_data["name"] or lora_data["id"], b"font-weight: bold;")
 		self.name_label.set_size_request(-1, -1)
 		right_box.pack_start(self.name_label.get_widget(), False, False, 0)
-		self.description_label = AIHubLabel(lora_data["description"], b"font-style: italic;")
+		self.description_label = AIHubLabel(lora_data["description"] or "", b"font-style: italic;")
 		self.description_label.set_size_request(-1, -1)
 		right_box.pack_start(self.description_label.get_widget(), False, False, 0)
 		self.slider = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 1, 0.05)
@@ -3056,9 +3057,22 @@ class AIHubExposeImageBatch(AIHubExposeBase):
 		# now we need to extend this widget with a delete button on the right
 		delete_button = Gtk.Button(label="Delete")
 		delete_button.connect("clicked", self.on_delete_expose, expose)
+
+		move_up_button = Gtk.Button(label="↑")
+		move_up_button.connect("clicked", self.on_move_expose, +1, expose)
+		
+		move_down_button = Gtk.Button(label="↓")
+		move_down_button.connect("clicked", self.on_move_expose, -1, expose)
+
+		box_for_move_buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+		box_for_move_buttons.pack_start(move_up_button, True, True, 0)
+		box_for_move_buttons.pack_start(move_down_button, True, True, 0)
+
 		# add the delete button to the right of the usual widget
 		vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
 		vbox.pack_start(usual_widget, True, True, 0)
+		vbox.pack_start(box_for_move_buttons, False, False, 0)
+
 
 		metadata_fields_text = self.data.get("metadata_fields", "")
 		if metadata_fields_text is None or metadata_fields_text.strip() == "":
@@ -3292,16 +3306,17 @@ class AIHubExposeImageBatch(AIHubExposeBase):
 
 		metadata_fields_text = self.data.get("metadata_fields", "")
 		if metadata_fields_text is None or metadata_fields_text.strip() == "":
-			return
-		metadata_fields_splitted = [field.strip() for field in metadata_fields_text.split("\n")]
-		for field in range(0, len(metadata_fields_splitted)):
-			siblings_list = []
-			for expose_metadata_list in self.list_of_expose_metadata_subexposes:
-				subexpose_in_question = expose_metadata_list[field]
-				siblings_list.append(subexpose_in_question)
-			for expose_metadata_list in self.list_of_expose_metadata_subexposes:
-				subexpose_in_question = expose_metadata_list[field]
-				subexpose_in_question.set_siblings(siblings_list)
+			pass
+		else:
+			metadata_fields_splitted = [field.strip() for field in metadata_fields_text.split("\n")]
+			for field in range(0, len(metadata_fields_splitted)):
+				siblings_list = []
+				for expose_metadata_list in self.list_of_expose_metadata_subexposes:
+					subexpose_in_question = expose_metadata_list[field]
+					siblings_list.append(subexpose_in_question)
+				for expose_metadata_list in self.list_of_expose_metadata_subexposes:
+					subexpose_in_question = expose_metadata_list[field]
+					subexpose_in_question.set_siblings(siblings_list)
 
 		for i in range(0, len(self.list_of_exposes)):
 			expose = self.list_of_exposes[i]
@@ -3334,6 +3349,49 @@ class AIHubExposeImageBatch(AIHubExposeBase):
 			element.get_widget().show_all()
 			element.current_image_changed(self.current_image, self.image_model)
 			element.after_ui_built(self.all_exposes_in_workflow)
+
+	def on_move_expose(self, widget, direction, expose):
+		index = self.list_of_exposes.index(expose)
+		if index > 0 and direction == -1 or index < len(self.list_of_exposes)-1 and direction == +1:
+			# swap in the list
+			self.list_of_exposes[index], self.list_of_exposes[index+direction] = self.list_of_exposes[index+direction], self.list_of_exposes[index]
+			self.list_of_expose_widgets[index], self.list_of_expose_widgets[index+direction] = self.list_of_expose_widgets[index+direction], self.list_of_expose_widgets[index]
+			self.list_of_expose_metadata_subexposes[index], self.list_of_expose_metadata_subexposes[index+direction] = self.list_of_expose_metadata_subexposes[index+direction], self.list_of_expose_metadata_subexposes[index]
+			# remove all widgets and re-add them in order
+			for child in self.innerbox.get_children():
+				self.innerbox.remove(child)
+			for widget in self.list_of_expose_widgets:
+				self.innerbox.pack_start(widget, True, True, 0)
+			self.innerbox.show_all()
+			# we clear it up, we call onchange later anyway
+			self.on_change([])
+
+			metadata_fields_text = self.data.get("metadata_fields", "")
+			if metadata_fields_text is None or metadata_fields_text.strip() == "":
+				pass
+			else:
+				metadata_fields_splitted = [field.strip() for field in metadata_fields_text.split("\n")]
+				for field in range(0, len(metadata_fields_splitted)):
+					siblings_list = []
+					for expose_metadata_list in self.list_of_expose_metadata_subexposes:
+						subexpose_in_question = expose_metadata_list[field]
+						siblings_list.append(subexpose_in_question)
+					for expose_metadata_list in self.list_of_expose_metadata_subexposes:
+						subexpose_in_question = expose_metadata_list[field]
+						subexpose_in_question.set_siblings(siblings_list)
+
+			for i in range(0, len(self.list_of_exposes)):
+				expose = self.list_of_exposes[i]
+				expose.change_id([self.id, i, "value"])
+				expose.change_label(_("Image {}").format(i+1))
+				# specific to image expose
+				expose.on_change(expose.get_value_base())
+
+				metadata_fields_elements = self.list_of_expose_metadata_subexposes[i]
+				for element in metadata_fields_elements:
+					current_id = element.get_id()
+					element.change_id([self.id, i, "metadata", current_id[-1]])
+					element.on_change_value(expose.get_value())
 
 	def get_widget(self):
 		return self.box

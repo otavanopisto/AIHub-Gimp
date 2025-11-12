@@ -1473,8 +1473,16 @@ class AIHubExposeInteger(AIHubExposeBase):
 
 		# make a numeric entry that only allows for integer values
 		expected_step = data["step"] if "step" in data else 1
+
+		initial_value_int = 0
+		try:
+			initial_value_int = int(self.initial_value)
+		except:
+			initial_value_int = 0
+			print("Warning: initial value for integer expose is not a valid integer: {}".format(self.initial_value))
+		
 		self.adjustment = Gtk.Adjustment(
-			value=int(self.initial_value) if self.initial_value is not None else (data["min"] if "min" in data else 0),
+			value=initial_value_int if self.initial_value is not None else (data["min"] if "min" in data else 0),
 			lower=data["min"] if "min" in data and (not "min_expose_id" in data or not data["min_expose_id"]) else -0x8000000000000000,
 			upper=data["max"] if "max" in data and (not "max_expose_id" in data or not data["max_expose_id"]) else 0xffffffffffffffff,
 			step_increment=expected_step,
@@ -1486,7 +1494,7 @@ class AIHubExposeInteger(AIHubExposeBase):
 		self.widget.connect("value-changed", self.on_change_value)
 
 		if (self.initial_value is not None):
-			self.widget.set_value(int(self.initial_value))
+			self.widget.set_value(initial_value_int)
 
 		# add a tooltip with the description if any available
 		if "tooltip" in data and data["tooltip"] is not None and data["tooltip"] != "":
@@ -1740,8 +1748,15 @@ class AIHubExposeFloat(AIHubExposeBase):
 
 		# make a numeric entry that only allows for float values
 		expected_step = data["step"] if "step" in data else 0.1
+		initial_value_float = 0.0
+		try:
+			initial_value_float = float(self.initial_value)
+		except:
+			initial_value_float = 0.0
+			print("Warning: initial value for float expose is not a valid float: {}".format(self.initial_value))
+
 		adjustment = Gtk.Adjustment(
-			value=float(self.initial_value) if self.initial_value is not None else (data["min"] if "min" in data else 0.0),
+			value=initial_value_float if self.initial_value is not None else (data["min"] if "min" in data else 0.0),
 			lower=data["min"] if "min" in data and (not "min_expose_id" in data or not data["min_expose_id"]) else -1e10,
 			upper=data["max"] if "max" in data and (not "max_expose_id" in data or not data["max_expose_id"]) else 1e10,
 			step_increment=expected_step,
@@ -1756,7 +1771,7 @@ class AIHubExposeFloat(AIHubExposeBase):
 		self.widget.set_input_purpose(Gtk.InputPurpose.NUMBER)
 
 		if (self.initial_value is not None):
-			self.widget.set_value(float(self.initial_value))
+			self.widget.set_value(initial_value_float)
 
 		# add a tooltip with the description if any available
 		if "tooltip" in data and data["tooltip"] is not None and data["tooltip"] != "":
@@ -3059,10 +3074,10 @@ class AIHubExposeImageBatch(AIHubExposeBase):
 		delete_button.connect("clicked", self.on_delete_expose, expose)
 
 		move_up_button = Gtk.Button(label="↑")
-		move_up_button.connect("clicked", self.on_move_expose, +1, expose)
+		move_up_button.connect("clicked", self.on_move_expose, -1, expose)
 		
 		move_down_button = Gtk.Button(label="↓")
-		move_down_button.connect("clicked", self.on_move_expose, -1, expose)
+		move_down_button.connect("clicked", self.on_move_expose, +1, expose)
 
 		box_for_move_buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
 		box_for_move_buttons.pack_start(move_up_button, True, True, 0)
@@ -3329,7 +3344,7 @@ class AIHubExposeImageBatch(AIHubExposeBase):
 			for element in metadata_fields_elements:
 				current_id = element.get_id()
 				element.change_id([self.id, i, "metadata", current_id[-1]])
-				element.on_change_value(expose.get_value())
+				element.on_change(element.get_value())
  
 	def on_add_expose(self, widget):
 		new_expose = AIHubExposeImage([self.id, len(self.list_of_exposes), "value"], {
@@ -3362,7 +3377,6 @@ class AIHubExposeImageBatch(AIHubExposeBase):
 				self.innerbox.remove(child)
 			for widget in self.list_of_expose_widgets:
 				self.innerbox.pack_start(widget, True, True, 0)
-			self.innerbox.show_all()
 			# we clear it up, we call onchange later anyway
 			self.on_change([])
 
@@ -3391,7 +3405,7 @@ class AIHubExposeImageBatch(AIHubExposeBase):
 				for element in metadata_fields_elements:
 					current_id = element.get_id()
 					element.change_id([self.id, i, "metadata", current_id[-1]])
-					element.on_change_value(expose.get_value())
+					element.on_change(element.get_value())
 
 	def get_widget(self):
 		return self.box

@@ -1155,8 +1155,8 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 
 						filtered_loras = [
 							lora for lora in self.loras if lora["context"] == selected_context and
-							(limit_to_family is None or lora.get("family", None) == limit_to_family) and
-							(limit_to_group is None or lora.get("group", None) == limit_to_group)
+							(limit_to_family is None or lora.get("limit_to_family", None) == limit_to_family) and
+							(limit_to_group is None or lora.get("limit_to_group", None) == limit_to_group)
 						]
 
 						data["filtered_loras"] = filtered_loras
@@ -1270,9 +1270,21 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 			else:
 				advanced_options_box.show()
 				button.set_label(_("Hide Advanced Options"))
+
+		def on_run_workflow_continous(self, button):
+			if self.errored:
+				return
+			
+			self.continuous_mode = not self.continuous_mode
+
+			self.on_run_workflow(button)
 			
 		def on_run_workflow(self, button):
 			if self.errored:
+				return
+			
+			# if it is already running, we do nothing
+			if self.is_running:
 				return
 			
 			# check if all the elements are can_run returns true
@@ -1442,6 +1454,8 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 			if self.errored:
 				return
 			
+			self.continuous_mode = False
+			
 			# literally not running or we haven't received a run id
 			# either this is going slow or something odd is happening
 			# either way without this id we can't really cancel anything
@@ -1485,7 +1499,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 
 				messageToShow = messageOverride if messageOverride is not None else (_("Status: Running workflow...") if running else _("Status: Ready"))
 				self.setStatus(messageToShow, error=error)
-				if not running:
+				if not running and not self.continuous_mode:
 					# the reason we force this focus is because the dialog remains static while it is running
 					# and it may had been focused during that phase, so we force it to refocus once it is done
 					# so that the user can see the updated status
@@ -1500,6 +1514,10 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 
 				if hasattr(self, "project_dialog") and self.project_dialog is not None and self.project_is_real and not running:
 					self.project_dialog.refresh(self.project_file_contents, self.project_current_timeline_folder)
+
+				if self.continuous_mode and not running and not error:
+					# we are in continuous mode, so we re-run the workflow
+					self.on_run_workflow(self.run_button)
 
 			if threading.current_thread() is threading.main_thread():
 				do_action()
@@ -1551,6 +1569,8 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 			#GimpUi.Dialog.__init__(self, use_header_bar=use_header_bar)
 
 			self.connected: bool = False
+
+			self.continuous_mode: bool = False
 
 			self.protected_run_mode: bool = False
 			self.freeze_selector_renders = False
@@ -1706,6 +1726,17 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 			self.menu_item_about = Gtk.MenuItem(label=_("About AIHub"))
 			self.menu_item_about.connect("activate", self.on_menu_about)
 			menu.append(self.menu_item_about)
+
+			# add another divider to the menu
+			menu.append(Gtk.SeparatorMenuItem())
+
+			self.menu_item_run_workflow = Gtk.MenuItem(label=_("Run Workflow"))
+			self.menu_item_run_workflow.connect("activate", self.on_run_workflow)
+			menu.append(self.menu_item_run_workflow)
+
+			self.menu_item_run_workflow_continous = Gtk.MenuItem(label=_("Run Workflow Continously"))
+			self.menu_item_run_workflow_continous.connect("activate", self.on_run_workflow_continous)
+			menu.append(self.menu_item_run_workflow_continous)
 
 			menu_button.set_popup(menu)
 			menu.show_all()

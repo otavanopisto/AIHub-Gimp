@@ -297,8 +297,23 @@ class AIHubExposeImage(AIHubExposeBase):
 				self.select_from_layer_button.set_tooltip_text(known_tooltip)
 
 			if self.image_model is not None:
-				self.select_combo.set_model(self.image_model)
-				if self.image_model is not None and len(self.image_model) > 0:
+				# we need to add the option for no selection, but make a copy of the model first
+				# because we don't want to modify the original model
+				model = self.image_model
+				if self.data.get("optional", False):
+					# Get column types from the original model
+					n_columns = self.image_model.get_n_columns()
+					column_types = [self.image_model.get_column_type(i) for i in range(n_columns)]
+					new_model = Gtk.ListStore(*column_types)
+					# Copy all rows from the original model
+					for row in model:
+						new_model.append(list(row))
+					model = new_model
+					# we want to insert at the top the none option
+					model.insert(0, [ -1, _("No image selected"), None ])
+
+				self.select_combo.set_model(model)
+				if model is not None and len(model) > 0:
 					self.select_combo.set_active(0)
 
 			if (
@@ -410,6 +425,12 @@ class AIHubExposeImage(AIHubExposeBase):
 				tree_iter = self.select_combo.get_active_iter()
 				if tree_iter is not None:
 					id_of_image = self.select_combo.get_model()[tree_iter][0]
+					if id_of_image == -1:
+						# no image selected
+						if self.data.get("optional", False):
+							# optional, so we can skip, mark it as successful
+							return True
+						return False
 					gimp_image = Gimp.Image.get_by_id(id_of_image)
 					if gimp_image is not None:
 						# save the image to a temporary file
@@ -1017,6 +1038,14 @@ class AIHubExposeImage(AIHubExposeBase):
 				tree_iter = self.select_combo.get_active_iter()
 				if tree_iter is not None:
 					id_of_image = self.select_combo.get_model()[tree_iter][0]
+					if id_of_image == -1:
+						# no image selected
+						self.value_height = 0
+						self.value_width = 0
+						self.value_layer_id = ""
+						self.value_pos_x = 0
+						self.value_pos_y = 0
+						return
 					gimp_image = Gimp.Image.get_by_id(id_of_image)
 					if gimp_image is not None:
 						self.value_height = gimp_image.get_height()
@@ -1087,6 +1116,19 @@ class AIHubExposeImage(AIHubExposeBase):
 			# update the model of the select combo
 			# if the model is different from the current one
 			if (self.select_combo.get_model() != model and model is not None):
+				if self.data.get("optional", False):
+					# Get column types from the original model
+					n_columns = model.get_n_columns()
+					column_types = [model.get_column_type(i) for i in range(n_columns)]
+					new_model = Gtk.ListStore(*column_types)
+
+					# Copy all rows from the original model
+					for row in model:
+						new_model.append(list(row))
+					# we want to insert at the top the none option
+					new_model.insert(0, [ -1, _("No image selected"), None ])
+					model = new_model
+					
 				self.select_combo.set_model(model)
 				if model is not None and len(model) > 0:
 					self.select_combo.set_active(0)
@@ -1124,7 +1166,7 @@ class AIHubExposeImage(AIHubExposeBase):
 				self.error_label.show()
 				self.success_label.hide()
 				self.error_label.set_text(_("Please select a valid image"))
-			elif (self.value_width == 0 or self.value_height == 0):
+			elif (self.value_width == 0 or self.value_height == 0) and not self.data.get("optional", False):
 				self.error_label.show()
 				self.success_label.hide()
 				self.error_label.set_text(_("The selected image has no width or height"))
@@ -1136,7 +1178,7 @@ class AIHubExposeImage(AIHubExposeBase):
 				self.error_label.show()
 				self.success_label.hide()
 				self.error_label.set_text(_("There is no active image/layer in GIMP"))
-			elif (self.value_width == 0 or self.value_height == 0):
+			elif ((self.value_width == 0 or self.value_height == 0) and not self.data.get("optional", False)):
 				self.error_label.show()
 				self.success_label.hide()
 				self.error_label.set_text(_("The selected image has no width or height"))
@@ -1960,7 +2002,7 @@ class AIHubExposeBoolean(AIHubExposeBase):
 		return self.box
 	
 	def on_change_value(self, widget):
-		self.on_change(widget.get_value())
+		self.on_change(widget.get_active())
 
 		for sibling in self.siblings:
 			if "one_true" in self.data and self.data["one_true"] and self.get_value():

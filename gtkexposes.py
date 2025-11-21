@@ -2750,6 +2750,7 @@ class AIHubExposeModel(AIHubExposeBase):
 		self.box: Gtk.Box = None
 		self.options: list = []
 		self.labels: list = []
+		self.options_file: list = []
 		self.model: dict = None
 		self.model_image: Gtk.Image = None
 		self.model_description: AIHubLabel = None
@@ -2768,10 +2769,12 @@ class AIHubExposeModel(AIHubExposeBase):
 		# the label is optained from a similar field called options_label that works in the same way
 		self.labels = []
 		self.options = []
+		self.options_file = []
 
 		for model in data["filtered_models"]:
 			self.options.append(model["id"])
 			self.labels.append(model["name"])
+			self.options_file.append(model.get("file", None))
 				
 
 		for i in range(len(self.options)):
@@ -2781,12 +2784,21 @@ class AIHubExposeModel(AIHubExposeBase):
 		if self.initial_value is not None and self.initial_value["_id"] in self.options and not self.data.get("disable_model_selection", False):
 			self.widget.set_active_id(self.initial_value["_id"])
 			self.model = next((m for m in data["filtered_models"] if m["id"] == self.initial_value["_id"]), None)
-		elif "model" in data and data["model"] is not None and data["model"] in self.options:
-			self.widget.set_active_id(data["model"])
-			self.model = next((m for m in data["filtered_models"] if m["id"] == data["model"]), None)
+		elif "model" in data and data["model"] is not None and data["model"] in self.options_file:
+			# get the id of the model with that file
+			model_id = None
+			for m in data["filtered_models"]:
+				if m.get("file", None) == data["model"]:
+					model_id = m["id"]
+					break
+			self.widget.set_active_id(model_id)
+			self.model = next((m for m in data["filtered_models"] if m["id"] == model_id), None)
 		else:
 			self.widget.set_active(0)
 			self.model = next((m for m in data["filtered_models"] if m["id"] == self.widget.get_active_id()), None)
+
+		if self.data.get("disable_model_selection", False):
+			self.widget.set_sensitive(False)
 
 		# add on change event
 		self.widget.connect("changed", self.on_change_value)
@@ -3073,7 +3085,7 @@ class AIHubExposeModel(AIHubExposeBase):
 		if self.data.get("disable_model_selection", False):
 			if self.data["model"] is None or not self.data["model"]:
 				return False
-			if not self.data["model"] in self.options:
+			if not self.data["model"] in self.options_file:
 				return False
 		return self.model is not None
 	
@@ -3086,7 +3098,7 @@ class AIHubExposeModel(AIHubExposeBase):
 				self.error_label.show()
 				self.error_label.set_text(_("The model selection is disabled but no model is set"))
 				return
-			if not self.data["model"] in self.options:
+			if not self.data["model"] in self.options_file:
 				self.error_label.show()
 				self.error_label.set_text(_("The model selection is disabled but the set model {} is not available").format(self.data['model']))
 				return

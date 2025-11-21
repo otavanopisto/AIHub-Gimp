@@ -128,6 +128,9 @@ class ProjectDialog(Gtk.Dialog):
         self.image_model = image_model
         self.project_type = project_file_contents.get("project_type", "")
 
+        self.is_rebuilding = False
+        self.is_deleting = False
+
         self.images_opened = []
 
         self.custom_project_file_folder = os.path.join(self.project_folder, "project_files")
@@ -196,6 +199,10 @@ class ProjectDialog(Gtk.Dialog):
         self.rebuild_timeline_files()
 
     def on_timeline_selection_changed(self, selection):
+        if self.is_rebuilding or self.is_deleting:
+            # due to Gtk bugs we get selection changed events while rebuilding the tree
+            # no we get even more events when deleting timelines because of GTK bugs
+            return
         model, treeiter = selection.get_selected()
         if treeiter is not None:
             timeline_id = model[treeiter][1]
@@ -203,6 +210,7 @@ class ProjectDialog(Gtk.Dialog):
                 self.update_project_timeline(timeline_id)
 
     def rebuild_timeline_tree(self):
+        self.is_rebuilding = True
         if not hasattr(self, 'timeline_tree_widget'):
             # one column the name, the other column the id
             self.timeline_tree_store = Gtk.TreeStore(str, str)
@@ -339,6 +347,14 @@ class ProjectDialog(Gtk.Dialog):
             path = self.timeline_tree_store.get_path(current_iter)
             self.timeline_tree_widget.expand_to_path(path)
             self.timeline_tree_widget.get_selection().select_path(path)
+
+        self.is_rebuilding = False
+
+    def block_dialog(self):
+        self.set_sensitive(False)
+    
+    def unblock_dialog(self):
+        self.set_sensitive(True)
 
     def save_file_as(self, timeline_file_path):
         dialog = Gtk.FileChooserDialog(
@@ -644,9 +660,11 @@ class ProjectDialog(Gtk.Dialog):
             # that is a reference to the one in the tools.py
             self.project_file_contents = self.project_file_contents.copy()
 
+            self.is_deleting = True
             self.actually_delete_timeline(timeline_id, keep_children=keep_children)
             self.update_project_file(self.project_file_contents)
-            self.rebuild_timeline_ui()
+            self.is_deleting = False
+            #self.rebuild_timeline_ui()
         
     def on_close(self, callback):
         self.connect("response", lambda dialog, response: callback() or self.destroy() or self.cleanup())

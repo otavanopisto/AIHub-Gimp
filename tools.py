@@ -1513,7 +1513,11 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 					self.rollback_timeline_to_last_valid_state()
 
 				if hasattr(self, "project_dialog") and self.project_dialog is not None and self.project_is_real and not running:
+					self.project_dialog.unblock_dialog()
 					self.project_dialog.refresh(self.project_file_contents, self.project_current_timeline_folder)
+
+				if hasattr(self, "project_dialog") and self.project_dialog is not None and self.project_is_real and running:
+					self.project_dialog.block_dialog()
 
 				if self.continuous_mode and not running and not error:
 					# we are in continuous mode, so we re-run the workflow
@@ -2444,7 +2448,7 @@ def runToolsProcedure(procedure, run_mode, image, drawables, config, run_data):
 				return
 			special_workflows = []
 			for workflow in self.workflows.values():
-				if workflow.get("project_type") == project_type and not workflow.get("project_type_init", False):
+				if workflow.get("project_type") == project_type:
 					special_workflows.append(workflow)
 			if len(special_workflows) > 0:
 				for workflow in special_workflows:

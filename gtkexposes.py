@@ -1748,7 +1748,8 @@ class AIHubExposeSeed(AIHubExposeBase):
 	def get_value(self, half_size=False, half_size_coords=False):
 		current_selection = self.widget_value.get_active_id()
 		if current_selection == "random":
-			return random.randint(0, 0xffffffffffffffff)
+			random_value = random.randint(0, (2**32) - 1)
+			return random_value
 		else:
 			return self.widget_value_fixed.get_value_as_int()
 

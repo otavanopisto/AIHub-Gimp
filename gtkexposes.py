@@ -2248,7 +2248,7 @@ class AIHubExposeScheduler(AIHubExposeStringSelection):
 			return
 		default_scheduler = model.get("default_scheduler", None)
 		if default_scheduler is not None and isinstance(default_scheduler, str):
-			self.widget.set_value(default_scheduler)
+			self.widget.set_active_id(default_scheduler)
 			self.on_change(self.get_value())
 			self.check_validity(self.get_value())
 
@@ -2258,7 +2258,7 @@ class AIHubExposeExtendableScheduler(AIHubExposeStringSelection):
 			return
 		default_scheduler = model.get("default_scheduler", None)
 		if default_scheduler is not None and isinstance(default_scheduler, str):
-			self.widget.set_value(default_scheduler)
+			self.widget.set_active_id(default_scheduler)
 			self.on_change(self.get_value())
 			self.check_validity(self.get_value())
 
@@ -2268,7 +2268,7 @@ class AIHubExposeSampler(AIHubExposeStringSelection):
 			return
 		default_sampler = model.get("default_sampler", None)
 		if default_sampler is not None and isinstance(default_sampler, str):
-			self.widget.set_value(default_sampler)
+			self.widget.set_active_id(default_sampler)
 			self.on_change(self.get_value())
 			self.check_validity(self.get_value())
 
